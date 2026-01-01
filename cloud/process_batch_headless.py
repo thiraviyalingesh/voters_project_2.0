@@ -551,28 +551,27 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         completed_ocr = len(completed_indices)
 
         if cards_to_ocr:
-            # Use ProcessPoolExecutor with spawn method
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {executor.submit(ocr_single_card, card): card[1] for card in cards_to_ocr}
+            # Use multiprocessing.Pool with maxtasksperchild to avoid Tesseract hanging
+            from multiprocessing import Pool
 
-                for future in as_completed(futures):
-                    try:
-                        global_idx, s_no, data, pdf_name = future.result()
-                        ocr_results[global_idx] = (s_no, data, pdf_name)
-                        checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
-                        completed_ocr += 1
+            with Pool(processes=num_workers, maxtasksperchild=50) as pool:
+                results = []
+                for i, result in enumerate(pool.imap_unordered(ocr_single_card, cards_to_ocr, chunksize=10)):
+                    results.append(result)
+                    global_idx, s_no, data, pdf_name = result
+                    ocr_results[global_idx] = (s_no, data, pdf_name)
+                    checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
+                    completed_ocr += 1
 
-                        if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
-                            elapsed_str = format_time(get_elapsed())
-                            rate = completed_ocr / max(1, get_elapsed())
-                            remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate)
-                            log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} ({elapsed_str}, ~{format_time(remaining)} left)")
+                    if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
+                        elapsed_str = format_time(get_elapsed())
+                        rate = completed_ocr / max(1, get_elapsed())
+                        remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate)
+                        log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} ({elapsed_str}, ~{format_time(remaining)} left)")
 
-                        if completed_ocr % 500 == 0:
-                            checkpoint.data['elapsed_before_resume'] = get_elapsed()
-                            checkpoint.save()
-                    except Exception as e:
-                        completed_ocr += 1
+                    if completed_ocr % 500 == 0:
+                        checkpoint.data['elapsed_before_resume'] = get_elapsed()
+                        checkpoint.save()
 
         checkpoint.data['phase'] = 2
         checkpoint.save()
@@ -604,29 +603,26 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
 
-            # Use ProcessPoolExecutor with spawn method
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
+            # Use multiprocessing.Pool with maxtasksperchild
+            from multiprocessing import Pool
 
-                for future in as_completed(futures):
-                    try:
-                        global_idx, enhanced_data = future.result()
-                        checkpoint.data['enhanced_ocr_done'].append(global_idx)
+            with Pool(processes=num_workers, maxtasksperchild=20) as pool:
+                for result in pool.imap_unordered(enhanced_ocr_age_gender, cards_to_fix, chunksize=5):
+                    global_idx, enhanced_data = result
+                    checkpoint.data['enhanced_ocr_done'].append(global_idx)
 
-                        if enhanced_data and global_idx in ocr_results:
-                            s_no, old_data, pdf_name = ocr_results[global_idx]
-                            if old_data:
-                                if not old_data.get('age') and enhanced_data.get('age'):
-                                    old_data['age'] = enhanced_data['age']
-                                if not old_data.get('gender') and enhanced_data.get('gender'):
-                                    old_data['gender'] = enhanced_data['gender']
-                                checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
+                    if enhanced_data and global_idx in ocr_results:
+                        s_no, old_data, pdf_name = ocr_results[global_idx]
+                        if old_data:
+                            if not old_data.get('age') and enhanced_data.get('age'):
+                                old_data['age'] = enhanced_data['age']
+                            if not old_data.get('gender') and enhanced_data.get('gender'):
+                                old_data['gender'] = enhanced_data['gender']
+                            checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
 
-                        fixed_count += 1
-                        if fixed_count % 50 == 0:
-                            log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
-                    except:
-                        fixed_count += 1
+                    fixed_count += 1
+                    if fixed_count % 50 == 0:
+                        log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
 
             checkpoint.save()
 
