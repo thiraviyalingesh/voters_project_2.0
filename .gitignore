@@ -1,0 +1,88 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+venv/
+.python-version
+
+# Environment variables
+.env
+.env.local
+
+# UV package manager
+uv.lock
+
+# PDF files (too large for git)
+*.pdf
+*-eroll.zip
+*-eroll/
+
+# Constituency folders (uploaded PDFs)
+1-*/
+2-*/
+3-*/
+4-*/
+5-*/
+6-*/
+7-*/
+8-*/
+9-*/
+10-*/
+11-*/
+118-*/
+eroll/
+
+# Temp card images
+.*_temp_cards/
+processing/
+
+# Checkpoint files
+.*_checkpoint.json
+
+# Processing status
+.processing_status.json
+
+# Output files (Excel)
+output/
+*_excel.xlsx
+extracted_data.json
+*_extracted_data.json
+results*.txt
+
+# Log files
+logs/
+*.log
+
+# Upload directory
+uploads/
+
+# Images and screenshots
+*.jpg
+*.jpeg
+*.png
+!docs/*.png
+
+# Reports
+*.pdf
+!docs/*.pdf
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
