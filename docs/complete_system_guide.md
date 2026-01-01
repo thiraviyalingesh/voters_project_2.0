@@ -80,7 +80,7 @@ A cloud-based system to extract voter data from Tamil Nadu Electoral Roll PDFs u
 
 ```bash
 # Download and run setup script (ONE command)
-curl -sSL https://raw.githubusercontent.com/your-repo/setup.sh | bash
+curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash
 ```
 
 **What this installs:**
@@ -95,7 +95,7 @@ curl -sSL https://raw.githubusercontent.com/your-repo/setup.sh | bash
    - Android: [Play Store](https://play.google.com/store/apps/details?id=io.heckel.ntfy)
    - iOS: [App Store](https://apps.apple.com/app/ntfy/id1625396347)
 
-2. Open app → Tap **+** → Enter topic: `voter-analytics-YOUR-SECRET`
+2. Open app → Tap **+** → Enter topic: `vinayak-voter-alerts`
 
 3. Subscribe
 
