@@ -17,7 +17,7 @@ import sys
 import argparse
 from pathlib import Path
 import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import time
 import json
 import requests
@@ -551,7 +551,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         completed_ocr = len(completed_indices)
 
         if cards_to_ocr:
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Use ThreadPoolExecutor - works better with Tesseract
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(ocr_single_card, card): card[1] for card in cards_to_ocr}
 
                 for future in as_completed(futures):
@@ -603,7 +604,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
 
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            # Use ThreadPoolExecutor - works better with Tesseract
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
 
                 for future in as_completed(futures):
