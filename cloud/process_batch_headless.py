@@ -551,8 +551,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         completed_ocr = len(completed_indices)
 
         if cards_to_ocr:
-            # Use ThreadPoolExecutor - works better with Tesseract
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Use ProcessPoolExecutor with spawn method
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(ocr_single_card, card): card[1] for card in cards_to_ocr}
 
                 for future in as_completed(futures):
@@ -604,8 +604,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
 
-            # Use ThreadPoolExecutor - works better with Tesseract
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Use ProcessPoolExecutor with spawn method
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
                 futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
 
                 for future in as_completed(futures):
@@ -772,5 +772,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Use spawn method (same as Windows) to avoid fork issues with Tesseract
+    multiprocessing.set_start_method('spawn', force=True)
     multiprocessing.freeze_support()
     main()
