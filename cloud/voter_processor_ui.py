@@ -299,7 +299,15 @@ with tab1:
     if uploaded_files and constituency_name:
         st.info(f"📎 {len(uploaded_files)} PDF files selected")
 
-        if st.button("🚀 Start Processing", type="primary"):
+        col_btn1, col_btn2 = st.columns(2)
+
+        with col_btn1:
+            upload_only = st.button("📁 Upload Only", help="Save files without processing")
+
+        with col_btn2:
+            upload_and_process = st.button("🚀 Upload & Process", type="primary", help="Save files and start processing")
+
+        if upload_only or upload_and_process:
             # Create constituency folder
             constituency_folder = UPLOAD_DIR / constituency_name
             constituency_folder.mkdir(parents=True, exist_ok=True)
@@ -315,24 +323,80 @@ with tab1:
                     f.write(file.getbuffer())
                 progress_bar.progress((i + 1) / len(uploaded_files))
 
-            status_text.text("Files saved! Starting processing...")
-
-            # Check if already processing
-            status = load_status()
-            if status['processing']:
-                # Add to queue
-                add_to_queue(constituency_name, constituency_folder)
-                st.success(f"✅ Added to queue. Position: {len(status['queue']) + 1}")
+            if upload_only:
+                status_text.text("Files saved!")
+                st.success(f"✅ Uploaded {len(uploaded_files)} files to '{constituency_name}'. Start processing from 'Ready to Process' section below.")
             else:
-                # Start immediately
-                start_processing(constituency_folder, constituency_name)
-                st.success("🚀 Processing started!")
+                status_text.text("Files saved! Starting processing...")
+                # Check if already processing
+                status = load_status()
+                if status['processing']:
+                    # Add to queue
+                    add_to_queue(constituency_name, constituency_folder)
+                    st.success(f"✅ Added to queue. Position: {len(status['queue']) + 1}")
+                else:
+                    # Start immediately
+                    start_processing(constituency_folder, constituency_name)
+                    st.success("🚀 Processing started!")
 
             time.sleep(1)
             st.rerun()
 
     elif uploaded_files and not constituency_name:
         st.warning("⚠️ Please enter a constituency name")
+
+    # Show uploaded folders ready to process
+    st.markdown("---")
+    st.subheader("📂 Ready to Process")
+
+    uploaded_folders = []
+    if UPLOAD_DIR.exists():
+        for folder in UPLOAD_DIR.iterdir():
+            if folder.is_dir():
+                pdf_count = len(list(folder.glob("*.pdf")))
+                if pdf_count > 0:
+                    uploaded_folders.append({
+                        'name': folder.name,
+                        'path': str(folder),
+                        'pdf_count': pdf_count
+                    })
+
+    if uploaded_folders:
+        for folder in uploaded_folders:
+            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            with col1:
+                st.text(f"📁 {folder['name']}")
+            with col2:
+                st.text(f"{folder['pdf_count']} PDFs")
+            with col3:
+                if st.button("▶️ Start", key=f"start_{folder['name']}"):
+                    status = load_status()
+                    if status['processing']:
+                        add_to_queue(folder['name'], folder['path'])
+                        st.success(f"Added to queue")
+                    else:
+                        start_processing(folder['path'], folder['name'])
+                        st.success(f"Processing started!")
+                    time.sleep(1)
+                    st.rerun()
+            with col4:
+                if st.button("🗑️", key=f"delete_{folder['name']}", help="Delete folder"):
+                    import shutil
+                    shutil.rmtree(folder['path'])
+                    st.success(f"Deleted {folder['name']}")
+                    time.sleep(1)
+                    st.rerun()
+
+        st.markdown("---")
+        if st.button("🗑️ Delete All Uploaded", type="secondary"):
+            import shutil
+            for folder in uploaded_folders:
+                shutil.rmtree(folder['path'])
+            st.success("All uploaded folders deleted")
+            time.sleep(1)
+            st.rerun()
+    else:
+        st.text("No folders ready. Upload PDFs above.")
 
 # ============== TAB 2: Status ==============
 with tab2:
@@ -403,7 +467,7 @@ with tab3:
 
     if files:
         for f in files:
-            col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+            col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
 
             with col1:
                 st.text(f["name"])
@@ -420,13 +484,29 @@ with tab3:
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f["name"]
                     )
+            with col5:
+                if st.button("🗑️", key=f"del_{f['name']}", help="Delete file"):
+                    os.remove(f["path"])
+                    st.success(f"Deleted {f['name']}")
+                    time.sleep(1)
+                    st.rerun()
 
         st.markdown("---")
 
         # Bulk actions
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🗑️ Clear Old Files"):
+            if st.button("🗑️ Delete All Excel Files"):
+                for f in files:
+                    try:
+                        os.remove(f["path"])
+                    except:
+                        pass
+                st.success("All files deleted")
+                time.sleep(1)
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Clear Old Files (Keep 10)"):
                 # Keep only last 10 files
                 for f in files[10:]:
                     try:
