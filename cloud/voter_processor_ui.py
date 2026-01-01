@@ -437,6 +437,13 @@ with tab2:
     if status['queue']:
         for i, item in enumerate(status['queue'], 1):
             st.text(f"  {i}. {item['name']} (added {format_time_ago(item['added_at'])})")
+
+        if st.button("🗑️ Clear Queue"):
+            status['queue'] = []
+            save_status(status)
+            st.success("Queue cleared!")
+            time.sleep(1)
+            st.rerun()
     else:
         st.text("  Queue is empty")
 

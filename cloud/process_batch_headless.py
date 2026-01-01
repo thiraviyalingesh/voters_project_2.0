@@ -31,7 +31,6 @@ from openpyxl.styles import Font, Alignment, PatternFill
 import pytesseract
 
 # Configuration
-TESS_CONFIG = '--psm 6 --oem 1'
 NTFY_TOPIC = None  # Set via argument or environment
 
 
@@ -42,13 +41,18 @@ def send_notification(title, message, topic=None):
         return
 
     try:
+        # Remove emojis for compatibility
+        clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
+        if not clean_title:
+            clean_title = "Notification"
+
         requests.post(
             f"https://ntfy.sh/{topic}",
-            headers={"Title": title},
+            headers={"Title": clean_title},
             data=message.encode('utf-8'),
             timeout=10
         )
-        print(f"[NOTIFY] {title}")
+        print(f"[NOTIFY] {clean_title}")
     except Exception as e:
         print(f"[NOTIFY ERROR] {e}")
 
@@ -200,7 +204,7 @@ def ocr_single_card(args):
     jpg_path, global_idx, pdf_name = args
     try:
         img = Image.open(jpg_path)
-        text = pytesseract.image_to_string(img, lang='tam', config=TESS_CONFIG)
+        text = pytesseract.image_to_string(img, lang='tam')
         data = parse_voter_card(text)
         stem = Path(jpg_path).stem
         return global_idx, stem, data, pdf_name
@@ -221,15 +225,18 @@ def enhanced_ocr_age_gender(args):
         approaches = [
             ('original', lambda i: i),
             ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
+            ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
             ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
+            ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
         ]
 
         result = {'age': '', 'gender': ''}
 
+        # Try bottom crop first
         for name, transform in approaches:
             try:
                 processed_img = transform(bottom_crop)
-                text = pytesseract.image_to_string(processed_img, lang='tam+eng', config=TESS_CONFIG)
+                text = pytesseract.image_to_string(processed_img, lang='tam+eng')
 
                 if not result['age']:
                     age_match = re.search(r'வயது\s*:\s*(\d+)', text)
@@ -249,6 +256,32 @@ def enhanced_ocr_age_gender(args):
                     break
             except:
                 continue
+
+        # If still missing, try full image
+        if not result['age'] or not result['gender']:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(img)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng')
+
+                    if not result['age']:
+                        age_match = re.search(r'வயது\s*:\s*(\d+)', text)
+                        if age_match:
+                            result['age'] = age_match.group(1)
+
+                    if not result['gender']:
+                        if 'பாலினம்' in text:
+                            if 'ஆண்' in text:
+                                result['gender'] = 'Male'
+                            elif 'பெண்' in text:
+                                result['gender'] = 'Female'
+                            elif 'திருநங்கை' in text or 'மூன்றாம்' in text:
+                                result['gender'] = 'Third Gender'
+
+                    if result['age'] and result['gender']:
+                        break
+                except:
+                    continue
 
         return global_idx, result
     except Exception as e:
