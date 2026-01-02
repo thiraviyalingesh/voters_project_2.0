@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
 """
-Voter Analytics - Headless Batch Processor v6.0
+Voter Analytics - Headless Batch Processor v7.0
 Processes electoral roll PDFs without GUI for cloud deployment.
 
 Usage:
     python process_batch_headless.py /path/to/constituency/folder [--ntfy-topic your-topic]
 
-v6.0 Changes:
-- spawn method set at top (required for Ubuntu)
-- Consistent Pool usage with maxtasksperchild throughout
-- Fixed 8 cores default for VM
-- imap_unordered for better progress tracking
+v7.0 Changes:
+- ThreadPoolExecutor for OCR (fixes Tesseract deadlock with multiprocessing)
+- Pool only for PDF extraction (CPU-bound)
+- Works with 8 workers on Linux
 """
-
-# CRITICAL: Set spawn method BEFORE any multiprocessing imports
-import multiprocessing
-multiprocessing.set_start_method('spawn', force=True)
 
 import re
 import sys
 import argparse
 from pathlib import Path
-from multiprocessing import Pool
 import time
 import json
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Import image processing libraries
 import fitz  # PyMuPDF
@@ -36,7 +31,7 @@ import pytesseract
 
 # Configuration
 NTFY_TOPIC = None
-NUM_WORKERS = 4  # Fixed 8 cores for VM
+NUM_WORKERS = 8  # 8 cores for VM
 
 
 def send_notification(title, message, topic=None):
@@ -64,7 +59,7 @@ def send_notification(title, message, topic=None):
 def log(message):
     """Print log message with timestamp."""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def extract_part_number(pdf_name):
@@ -203,9 +198,8 @@ def parse_voter_card(text):
     return data
 
 
-def extract_cards_from_pdf(args):
-    """Worker function to extract cards from a single PDF."""
-    pdf_path, temp_base_dir, pdf_index = args
+def extract_cards_from_pdf_sequential(pdf_path, temp_base_dir, pdf_index):
+    """Extract cards from a single PDF (runs in main thread)."""
     try:
         pdf_path = Path(pdf_path)
         pdf_name = pdf_path.stem
@@ -465,7 +459,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
     # Setup workers
     if num_workers is None:
         num_workers = NUM_WORKERS
-    log(f"Using {num_workers} worker processes (spawn mode)")
+    log(f"Using {num_workers} threads (ThreadPoolExecutor)")
 
     checkpoint_path = folder_path.parent / f".{constituency_name}_checkpoint.json"
     checkpoint = CheckpointManager(checkpoint_path)
@@ -499,32 +493,30 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         f"Constituency: {constituency_name}\nPDFs: {total_pdfs}\nWorkers: {num_workers}"
     )
 
-    # ===== PHASE 1: Extract cards from PDFs =====
+    # ===== PHASE 1: Extract cards from PDFs (sequential - PyMuPDF not thread-safe) =====
     if current_phase < 1:
         log("Phase 1/4: Extracting cards from PDFs...")
 
         extracted_pdf_names = set(pdf_card_info.keys())
-        pdfs_to_extract = [(str(pdf), str(image_dir), idx) for idx, pdf in enumerate(pdf_files)
-                          if pdf.stem not in extracted_pdf_names]
-
         completed_pdfs = len(extracted_pdf_names)
         total_cards = sum(info[0] for info in pdf_card_info.values())
 
-        if pdfs_to_extract:
-            # Use Pool with maxtasksperchild to prevent memory leaks from PyMuPDF
-            with Pool(processes=num_workers, maxtasksperchild=10) as pool:
-                for result in pool.imap_unordered(extract_cards_from_pdf, pdfs_to_extract, chunksize=2):
-                    pdf_idx, pdf_name, card_count, output_path = result
-                    pdf_card_info[pdf_name] = (card_count, output_path)
-                    completed_pdfs += 1
-                    total_cards += card_count
+        for idx, pdf in enumerate(pdf_files):
+            if pdf.stem in extracted_pdf_names:
+                continue
 
-                    if completed_pdfs % 5 == 0 or completed_pdfs == total_pdfs:
-                        elapsed_str = format_time(get_elapsed())
-                        log(f"  Extracted: {completed_pdfs}/{total_pdfs} PDFs ({total_cards:,} cards) [{elapsed_str}]")
-                        checkpoint.data['extracted_pdfs'] = pdf_card_info
-                        checkpoint.data['elapsed_before_resume'] = get_elapsed()
-                        checkpoint.save()
+            pdf_idx, pdf_name, card_count, output_path = extract_cards_from_pdf_sequential(
+                str(pdf), str(image_dir), idx
+            )
+            pdf_card_info[pdf_name] = (card_count, output_path)
+            completed_pdfs += 1
+            total_cards += card_count
+
+            elapsed_str = format_time(get_elapsed())
+            log(f"  Extracted: {completed_pdfs}/{total_pdfs} PDFs ({total_cards:,} cards) [{elapsed_str}]")
+            checkpoint.data['extracted_pdfs'] = pdf_card_info
+            checkpoint.data['elapsed_before_resume'] = get_elapsed()
+            checkpoint.save()
 
         # Build card list
         log("  Building card index...")
@@ -548,7 +540,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         current_phase = 1
         log(f"  Phase 1 complete: {len(all_cards):,} cards extracted")
 
-    # ===== PHASE 2: OCR all cards =====
+    # ===== PHASE 2: OCR all cards (ThreadPoolExecutor - Tesseract releases GIL) =====
     if current_phase < 2:
         log("Phase 2/4: OCR processing all cards...")
 
@@ -568,23 +560,29 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         if cards_to_ocr:
             log(f"  OCR remaining: {len(cards_to_ocr):,} cards")
 
-            # Use Pool with maxtasksperchild to prevent Tesseract memory leaks
-            with Pool(processes=num_workers, maxtasksperchild=50) as pool:
-                for result in pool.imap_unordered(ocr_single_card, cards_to_ocr, chunksize=10):
-                    global_idx, s_no, data, pdf_name = result
-                    ocr_results[global_idx] = (s_no, data, pdf_name)
-                    checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
-                    completed_ocr += 1
+            # Use ThreadPoolExecutor - Tesseract releases GIL so threads work well
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(ocr_single_card, card): card[1] for card in cards_to_ocr}
 
-                    if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
-                        elapsed_str = format_time(get_elapsed())
-                        rate = (completed_ocr - len(completed_indices)) / max(1, get_elapsed() - elapsed_before)
-                        remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate) if rate > 0 else 0
-                        log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} [{elapsed_str}, ~{format_time(remaining)} left]")
+                for future in as_completed(futures):
+                    try:
+                        global_idx, s_no, data, pdf_name = future.result()
+                        ocr_results[global_idx] = (s_no, data, pdf_name)
+                        checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
+                        completed_ocr += 1
 
-                    if completed_ocr % 500 == 0:
-                        checkpoint.data['elapsed_before_resume'] = get_elapsed()
-                        checkpoint.save()
+                        if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
+                            elapsed_str = format_time(get_elapsed())
+                            rate = (completed_ocr - len(completed_indices)) / max(1, get_elapsed() - elapsed_before)
+                            remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate) if rate > 0 else 0
+                            log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} [{elapsed_str}, ~{format_time(remaining)} left]")
+
+                        if completed_ocr % 500 == 0:
+                            checkpoint.data['elapsed_before_resume'] = get_elapsed()
+                            checkpoint.save()
+                    except Exception as e:
+                        log(f"  OCR error: {e}")
+                        completed_ocr += 1
 
         checkpoint.data['phase'] = 2
         checkpoint.save()
@@ -616,27 +614,30 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
 
-            # Use Pool with maxtasksperchild for enhanced OCR
-            with Pool(processes=num_workers, maxtasksperchild=20) as pool:
-                for result in pool.imap_unordered(enhanced_ocr_age_gender, cards_to_fix, chunksize=5):
-                    global_idx, enhanced_data = result
-                    checkpoint.data['enhanced_ocr_done'].append(global_idx)
+            # Use ThreadPoolExecutor for enhanced OCR
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
 
-                    if enhanced_data and global_idx in ocr_results:
-                        s_no, old_data, pdf_name = ocr_results[global_idx]
-                        if old_data:
-                            if not old_data.get('age') and enhanced_data.get('age'):
-                                old_data['age'] = enhanced_data['age']
-                            if not old_data.get('gender') and enhanced_data.get('gender'):
-                                old_data['gender'] = enhanced_data['gender']
-                            checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
+                for future in as_completed(futures):
+                    try:
+                        global_idx, enhanced_data = future.result()
+                        checkpoint.data['enhanced_ocr_done'].append(global_idx)
 
-                    fixed_count += 1
-                    if fixed_count % 50 == 0 or fixed_count == len(cards_to_fix):
-                        log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
+                        if enhanced_data and global_idx in ocr_results:
+                            s_no, old_data, pdf_name = ocr_results[global_idx]
+                            if old_data:
+                                if not old_data.get('age') and enhanced_data.get('age'):
+                                    old_data['age'] = enhanced_data['age']
+                                if not old_data.get('gender') and enhanced_data.get('gender'):
+                                    old_data['gender'] = enhanced_data['gender']
+                                checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
 
-                if fixed_count % 100 == 0:
-                    checkpoint.save()
+                        fixed_count += 1
+                        if fixed_count % 50 == 0 or fixed_count == len(cards_to_fix):
+                            log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
+                    except Exception as e:
+                        log(f"  Enhanced OCR error: {e}")
+                        fixed_count += 1
 
             checkpoint.save()
         else:
@@ -764,16 +765,16 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v6.0')
+    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v7.0')
     parser.add_argument('folder', help='Path to constituency folder containing PDFs')
     parser.add_argument('--ntfy-topic', help='Ntfy topic for notifications')
-    parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of worker processes (default: {NUM_WORKERS})')
+    parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of threads (default: {NUM_WORKERS})')
     parser.add_argument('--no-cleanup', action='store_true', help='Keep temp files after processing')
 
     args = parser.parse_args()
 
-    log(f"Voter Analytics Headless Processor v6.0")
-    log(f"Multiprocessing start method: spawn")
+    log(f"Voter Analytics Headless Processor v7.0")
+    log(f"Using ThreadPoolExecutor (no multiprocessing deadlocks)")
     log(f"Workers: {args.workers}")
 
     success = process_constituency(
@@ -787,5 +788,4 @@ def main():
 
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
     main()
