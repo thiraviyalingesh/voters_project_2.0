@@ -22,7 +22,7 @@ import requests
 NTFY_TOPIC = "vinayak-voter-alerts"  # Your Ntfy topic
 BASE_DIR = Path.home() / "voter_analytics"
 UPLOAD_DIR = BASE_DIR / "uploads"
-OUTPUT_DIR = BASE_DIR / "output"
+OUTPUT_DIR = UPLOAD_DIR / "output"  # Same as processor output
 PROCESSING_DIR = BASE_DIR / "processing"
 LOGS_DIR = BASE_DIR / "logs"
 
