@@ -192,7 +192,7 @@ def ocr_single_card(args):
     jpg_path, global_idx, pdf_name = args
     try:
         img = Image.open(jpg_path)
-        custom_config = r'--oem 3 --psm 6 -c omp_thread_limit=1'
+        custom_config = r'-c omp_thread_limit=1'
         text = pytesseract.image_to_string(img, lang='tam', config=custom_config)
         data = parse_voter_card(text)
         stem = Path(jpg_path).stem
@@ -218,7 +218,7 @@ def enhanced_ocr_age_gender(args):
         ]
 
         result = {'age': '', 'gender': ''}
-        custom_config = r'--oem 3 --psm 6 -c omp_thread_limit=1'
+        custom_config = r'-c omp_thread_limit=1'
 
         # Try bottom crop first
         for name, transform in approaches:
