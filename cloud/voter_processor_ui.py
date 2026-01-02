@@ -7,6 +7,13 @@ Usage:
 """
 
 import streamlit as st
+
+# Remove file upload limits
+st.set_page_config(
+    page_title="Voter Analytics Processor",
+    page_icon="🗳️",
+    layout="wide"
+)
 import os
 import sys
 import time
@@ -235,12 +242,6 @@ def format_time_ago(dt):
         return f"{days}d ago"
 
 # ============== STREAMLIT UI ==============
-
-st.set_page_config(
-    page_title="Voter Analytics Processor",
-    page_icon="🗳️",
-    layout="wide"
-)
 
 # Custom CSS
 st.markdown("""
