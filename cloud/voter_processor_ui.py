@@ -54,7 +54,8 @@ def load_status():
         'start_time': None,
         'queue': [],
         'completed': [],
-        'errors': []
+        'errors': [],
+        'pid': None
     }
 
 def save_status(status):
@@ -98,6 +99,36 @@ def send_notification(title, message):
         except:
             pass
 
+def kill_process():
+    """Kill the running processor."""
+    status = load_status()
+    if status.get('pid'):
+        try:
+            import signal
+            os.kill(status['pid'], signal.SIGTERM)
+            time.sleep(1)
+            # Force kill if still running
+            try:
+                os.kill(status['pid'], signal.SIGKILL)
+            except:
+                pass
+        except ProcessLookupError:
+            pass  # Process already dead
+        except Exception as e:
+            pass
+
+    # Also kill by name as backup
+    try:
+        subprocess.run(['pkill', '-f', 'process_batch_headless.py'], capture_output=True)
+    except:
+        pass
+
+    status['processing'] = False
+    status['current_constituency'] = None
+    status['pid'] = None
+    save_status(status)
+    return True
+
 def run_processor(folder_path, constituency_name):
     """Run the headless processor in background."""
     status = load_status()
@@ -111,10 +142,10 @@ def run_processor(folder_path, constituency_name):
     log_file = LOGS_DIR / f"{constituency_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
     try:
-        # Run processor
+        # Run processor - use cloud folder path
         cmd = [
             sys.executable,
-            str(BASE_DIR / "process_batch_headless.py"),
+            str(BASE_DIR / "cloud" / "process_batch_headless.py"),
             str(folder_path),
             "--ntfy-topic", NTFY_TOPIC
         ]
@@ -126,6 +157,12 @@ def run_processor(folder_path, constituency_name):
                 stderr=subprocess.STDOUT,
                 cwd=str(BASE_DIR)
             )
+
+            # Store PID
+            status = load_status()
+            status['pid'] = process.pid
+            save_status(status)
+
             process.wait()
 
         # Update status
@@ -154,17 +191,12 @@ def run_processor(folder_path, constituency_name):
         })
         send_notification("❌ Processing Error", f"Constituency: {constituency_name}\nError: {str(e)}")
 
-    # Check if more in queue
+    # Mark as done
     status = load_status()
     status['processing'] = False
     status['current_constituency'] = None
-
-    if status['queue']:
-        next_item = status['queue'].pop(0)
-        save_status(status)
-        run_processor(next_item['folder'], next_item['name'])
-    else:
-        save_status(status)
+    status['pid'] = None
+    save_status(status)
 
 def start_processing(folder_path, constituency_name):
     """Start processing in background thread."""
@@ -299,13 +331,21 @@ with tab1:
     if uploaded_files and constituency_name:
         st.info(f"📎 {len(uploaded_files)} PDF files selected")
 
+        status = load_status()
+        is_processing = status['processing']
+
         col_btn1, col_btn2 = st.columns(2)
 
         with col_btn1:
             upload_only = st.button("📁 Upload Only", help="Save files without processing")
 
         with col_btn2:
-            upload_and_process = st.button("🚀 Upload & Process", type="primary", help="Save files and start processing")
+            upload_and_process = st.button(
+                "🚀 Upload & Process",
+                type="primary",
+                help="Save files and start processing" if not is_processing else "Process already running",
+                disabled=is_processing
+            )
 
         if upload_only or upload_and_process:
             # Create constituency folder
@@ -328,16 +368,8 @@ with tab1:
                 st.success(f"✅ Uploaded {len(uploaded_files)} files to '{constituency_name}'. Start processing from 'Ready to Process' section below.")
             else:
                 status_text.text("Files saved! Starting processing...")
-                # Check if already processing
-                status = load_status()
-                if status['processing']:
-                    # Add to queue
-                    add_to_queue(constituency_name, constituency_folder)
-                    st.success(f"✅ Added to queue. Position: {len(status['queue']) + 1}")
-                else:
-                    # Start immediately
-                    start_processing(constituency_folder, constituency_name)
-                    st.success("🚀 Processing started!")
+                start_processing(constituency_folder, constituency_name)
+                st.success("🚀 Processing started!")
 
             time.sleep(1)
             st.rerun()
@@ -362,6 +394,12 @@ with tab1:
                     })
 
     if uploaded_folders:
+        status = load_status()
+        is_processing = status['processing']
+
+        if is_processing:
+            st.warning("⚠️ A process is already running. Kill it first or wait for completion.")
+
         for folder in uploaded_folders:
             col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
             with col1:
@@ -369,14 +407,9 @@ with tab1:
             with col2:
                 st.text(f"{folder['pdf_count']} PDFs")
             with col3:
-                if st.button("▶️ Start", key=f"start_{folder['name']}"):
-                    status = load_status()
-                    if status['processing']:
-                        add_to_queue(folder['name'], folder['path'])
-                        st.success(f"Added to queue")
-                    else:
-                        start_processing(folder['path'], folder['name'])
-                        st.success(f"Processing started!")
+                if st.button("▶️ Start", key=f"start_{folder['name']}", disabled=is_processing):
+                    start_processing(folder['path'], folder['name'])
+                    st.success(f"Processing started!")
                     time.sleep(1)
                     st.rerun()
             with col4:
@@ -415,7 +448,7 @@ with tab2:
         """, unsafe_allow_html=True)
 
         # Check for checkpoint file to get progress
-        checkpoint_file = UPLOAD_DIR.parent / f".{status['current_constituency']}_checkpoint.json"
+        checkpoint_file = UPLOAD_DIR / status['current_constituency'] / "checkpoint.json"
         if checkpoint_file.exists():
             try:
                 with open(checkpoint_file, 'r') as f:
@@ -427,8 +460,16 @@ with tab2:
         else:
             st.progress(0.1, text="Starting...")
 
-        if st.button("🔄 Refresh"):
-            st.rerun()
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("🔄 Refresh"):
+                st.rerun()
+        with col_btn2:
+            if st.button("🛑 Kill Process", type="primary"):
+                kill_process()
+                st.success("Process killed!")
+                time.sleep(1)
+                st.rerun()
     else:
         st.info("No active processing")
 
@@ -584,7 +625,7 @@ with tab4:
 # Footer
 st.markdown("---")
 st.markdown(
-    "<center><small>Voter Analytics Processor v1.0 | "
+    "<center><small>Voter Analytics Processor v2.0 | "
     f"Last refreshed: {datetime.now().strftime('%H:%M:%S')}</small></center>",
     unsafe_allow_html=True
 )
