@@ -1,23 +1,27 @@
+#!/usr/bin/env python3
 """
-Voter Analytics - Headless Batch Processor
+Voter Analytics - Headless Batch Processor v6.0
 Processes electoral roll PDFs without GUI for cloud deployment.
 
 Usage:
     python process_batch_headless.py /path/to/constituency/folder [--ntfy-topic your-topic]
 
-Features:
-- No GUI required (runs in terminal/background)
-- Checkpoint/resume capability
-- Ntfy push notifications
-- Auto-cleanup of temp files
+v6.0 Changes:
+- spawn method set at top (required for Ubuntu)
+- Consistent Pool usage with maxtasksperchild throughout
+- Fixed 8 cores default for VM
+- imap_unordered for better progress tracking
 """
+
+# CRITICAL: Set spawn method BEFORE any multiprocessing imports
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
 
 import re
 import sys
 import argparse
 from pathlib import Path
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from multiprocessing import Pool
 import time
 import json
 import requests
@@ -31,7 +35,8 @@ from openpyxl.styles import Font, Alignment, PatternFill
 import pytesseract
 
 # Configuration
-NTFY_TOPIC = None  # Set via argument or environment
+NTFY_TOPIC = None
+NUM_WORKERS = 4  # Fixed 8 cores for VM
 
 
 def send_notification(title, message, topic=None):
@@ -41,7 +46,6 @@ def send_notification(title, message, topic=None):
         return
 
     try:
-        # Remove emojis for compatibility
         clean_title = title.encode('ascii', 'ignore').decode('ascii').strip()
         if not clean_title:
             clean_title = "Notification"
@@ -199,6 +203,85 @@ def parse_voter_card(text):
     return data
 
 
+def extract_cards_from_pdf(args):
+    """Worker function to extract cards from a single PDF."""
+    pdf_path, temp_base_dir, pdf_index = args
+    try:
+        pdf_path = Path(pdf_path)
+        pdf_name = pdf_path.stem
+        output_path = Path(temp_base_dir) / pdf_name
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        doc = fitz.open(str(pdf_path))
+        num_pages = len(doc)
+        card_count = 0
+
+        start_page = 3
+        end_page = num_pages - 1
+
+        for page_num in range(start_page, end_page):
+            page = doc[page_num]
+
+            zoom = 1.5
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+            img_data = pix.tobytes("png")
+            page_img = Image.open(io.BytesIO(img_data))
+
+            page_width, page_height = page_img.size
+
+            num_cols = 3
+            num_rows = 10
+
+            header_height = int(page_height * 0.035)
+            footer_height = int(page_height * 0.025)
+            content_height = page_height - header_height - footer_height
+
+            card_width = page_width // num_cols
+            row_height = content_height // num_rows
+
+            page_cards = []
+
+            for row in range(num_rows):
+                for col in range(num_cols):
+                    x1 = col * card_width
+                    y1 = header_height + row * row_height
+                    x2 = x1 + card_width
+                    y2 = y1 + row_height
+
+                    padding = 1
+                    x1 = max(0, x1 + padding)
+                    y1 = max(0, y1 + padding)
+                    x2 = min(page_width, x2 - padding)
+                    y2 = min(page_height, y2 - padding)
+
+                    card_img = page_img.crop((x1, y1, x2, y2))
+
+                    # Fast brightness check
+                    pixels = card_img.getdata()
+                    sample_size = min(100, len(pixels))
+                    if sample_size > 0:
+                        step = len(pixels) // sample_size
+                        sampled = [pixels[i * step] for i in range(sample_size)]
+                        avg_brightness = sum(sum(p[:3]) / 3 for p in sampled) / sample_size
+                        if avg_brightness > 252:
+                            continue
+
+                    card_count += 1
+                    page_cards.append((card_count, card_img))
+
+            # Batch write
+            for card_num, card_img in page_cards:
+                card_filename = output_path / f"{card_num}.png"
+                card_img.save(card_filename, "PNG", compress_level=1)
+
+        doc.close()
+        return pdf_index, pdf_name, card_count, str(output_path)
+    except Exception as e:
+        print(f"Error extracting from {pdf_path}: {e}")
+        return pdf_index, Path(pdf_path).stem, 0, None
+
+
 def ocr_single_card(args):
     """Worker function to OCR a single voter card image."""
     jpg_path, global_idx, pdf_name = args
@@ -288,85 +371,6 @@ def enhanced_ocr_age_gender(args):
         return global_idx, None
 
 
-def extract_cards_from_pdf(args):
-    """Worker function to extract cards from a single PDF."""
-    pdf_path, temp_base_dir, pdf_index = args
-    try:
-        pdf_path = Path(pdf_path)
-        pdf_name = pdf_path.stem
-        output_path = Path(temp_base_dir) / pdf_name
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        doc = fitz.open(str(pdf_path))
-        num_pages = len(doc)
-        card_count = 0
-
-        start_page = 3
-        end_page = num_pages - 1
-
-        for page_num in range(start_page, end_page):
-            page = doc[page_num]
-
-            zoom = 1.5
-            mat = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=mat)
-            img_data = pix.tobytes("png")
-            page_img = Image.open(io.BytesIO(img_data))
-
-            page_width, page_height = page_img.size
-
-            num_cols = 3
-            num_rows = 10
-
-            header_height = int(page_height * 0.035)
-            footer_height = int(page_height * 0.025)
-            content_height = page_height - header_height - footer_height
-
-            card_width = page_width // num_cols
-            row_height = content_height // num_rows
-
-            page_cards = []
-
-            for row in range(num_rows):
-                for col in range(num_cols):
-                    x1 = col * card_width
-                    y1 = header_height + row * row_height
-                    x2 = x1 + card_width
-                    y2 = y1 + row_height
-
-                    padding = 1
-                    x1 = max(0, x1 + padding)
-                    y1 = max(0, y1 + padding)
-                    x2 = min(page_width, x2 - padding)
-                    y2 = min(page_height, y2 - padding)
-
-                    card_img = page_img.crop((x1, y1, x2, y2))
-
-                    # Fast brightness check
-                    pixels = card_img.getdata()
-                    sample_size = min(100, len(pixels))
-                    if sample_size > 0:
-                        step = len(pixels) // sample_size
-                        sampled = [pixels[i * step] for i in range(sample_size)]
-                        avg_brightness = sum(sum(p[:3]) / 3 for p in sampled) / sample_size
-                        if avg_brightness > 252:
-                            continue
-
-                    card_count += 1
-                    page_cards.append((card_count, card_img))
-
-            # Batch write
-            for card_num, card_img in page_cards:
-                card_filename = output_path / f"{card_num}.png"
-                card_img.save(card_filename, "PNG", compress_level=1)
-
-        doc.close()
-        return pdf_index, pdf_name, card_count, str(output_path)
-    except Exception as e:
-        print(f"Error extracting from {pdf_path}: {e}")
-        return pdf_index, Path(pdf_path).stem, 0, None
-
-
 class CheckpointManager:
     """Manages saving and loading checkpoint data for resume capability."""
 
@@ -391,11 +395,19 @@ class CheckpointManager:
     def load(self):
         if self.exists():
             try:
+                file_size = self.checkpoint_path.stat().st_size
+                size_mb = file_size / (1024 * 1024)
+                log(f"Loading checkpoint ({size_mb:.1f} MB)...")
+
                 with open(self.checkpoint_path, 'r', encoding='utf-8') as f:
                     self.data = json.load(f)
-                log(f"Loaded checkpoint: Phase {self.data['phase']}")
+
+                cards_count = len(self.data.get('all_cards', []))
+                ocr_count = len(self.data.get('ocr_results', {}))
+                log(f"Loaded: Phase {self.data['phase']}, {cards_count:,} cards, {ocr_count:,} OCR results")
                 return True
-            except:
+            except Exception as e:
+                log(f"Checkpoint load error: {e}")
                 return False
         return False
 
@@ -407,10 +419,13 @@ class CheckpointManager:
             temp_path.replace(self.checkpoint_path)
         except Exception as e:
             print(f"Error saving checkpoint: {e}")
+            if temp_path.exists():
+                temp_path.unlink()
 
     def delete(self):
         if self.exists():
             self.checkpoint_path.unlink()
+            log("Checkpoint deleted")
 
 
 def format_time(seconds):
@@ -447,10 +462,10 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
     log(f"Processing: {constituency_name}")
     log(f"PDFs found: {total_pdfs}")
 
-    # Setup
+    # Setup workers
     if num_workers is None:
-        num_workers = multiprocessing.cpu_count()
-    log(f"Using {num_workers} worker processes")
+        num_workers = NUM_WORKERS
+    log(f"Using {num_workers} worker processes (spawn mode)")
 
     checkpoint_path = folder_path.parent / f".{constituency_name}_checkpoint.json"
     checkpoint = CheckpointManager(checkpoint_path)
@@ -480,8 +495,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
     # Send start notification
     send_notification(
-        "🔄 Processing Started",
-        f"Constituency: {constituency_name}\nPDFs: {total_pdfs}"
+        "Processing Started",
+        f"Constituency: {constituency_name}\nPDFs: {total_pdfs}\nWorkers: {num_workers}"
     )
 
     # ===== PHASE 1: Extract cards from PDFs =====
@@ -496,25 +511,23 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         total_cards = sum(info[0] for info in pdf_card_info.values())
 
         if pdfs_to_extract:
-            with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                futures = {executor.submit(extract_cards_from_pdf, arg): arg[0] for arg in pdfs_to_extract}
+            # Use Pool with maxtasksperchild to prevent memory leaks from PyMuPDF
+            with Pool(processes=num_workers, maxtasksperchild=10) as pool:
+                for result in pool.imap_unordered(extract_cards_from_pdf, pdfs_to_extract, chunksize=2):
+                    pdf_idx, pdf_name, card_count, output_path = result
+                    pdf_card_info[pdf_name] = (card_count, output_path)
+                    completed_pdfs += 1
+                    total_cards += card_count
 
-                for future in as_completed(futures):
-                    try:
-                        pdf_idx, pdf_name, card_count, output_path = future.result()
-                        pdf_card_info[pdf_name] = (card_count, output_path)
-                        completed_pdfs += 1
-                        total_cards += card_count
-
-                        if completed_pdfs % 5 == 0 or completed_pdfs == total_pdfs:
-                            log(f"  Extracted: {completed_pdfs}/{total_pdfs} PDFs ({total_cards:,} cards)")
-                            checkpoint.data['extracted_pdfs'] = pdf_card_info
-                            checkpoint.data['elapsed_before_resume'] = get_elapsed()
-                            checkpoint.save()
-                    except Exception as e:
-                        print(f"Error: {e}")
+                    if completed_pdfs % 5 == 0 or completed_pdfs == total_pdfs:
+                        elapsed_str = format_time(get_elapsed())
+                        log(f"  Extracted: {completed_pdfs}/{total_pdfs} PDFs ({total_cards:,} cards) [{elapsed_str}]")
+                        checkpoint.data['extracted_pdfs'] = pdf_card_info
+                        checkpoint.data['elapsed_before_resume'] = get_elapsed()
+                        checkpoint.save()
 
         # Build card list
+        log("  Building card index...")
         all_cards = []
         global_idx = 0
         for pdf_name, (card_count, output_path) in pdf_card_info.items():
@@ -545,19 +558,19 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         ocr_data = checkpoint.data.get('ocr_results', {})
         completed_indices = set(int(k) for k in ocr_data.keys())
 
+        log(f"  Already completed: {len(completed_indices):,} cards")
+
         cards_to_ocr = [(p, idx, name) for p, idx, name in all_cards if idx not in completed_indices]
         ocr_results = {int(k): tuple(v) for k, v in ocr_data.items()}
 
         completed_ocr = len(completed_indices)
 
         if cards_to_ocr:
-            # Use multiprocessing.Pool with maxtasksperchild to avoid Tesseract hanging
-            from multiprocessing import Pool
+            log(f"  OCR remaining: {len(cards_to_ocr):,} cards")
 
+            # Use Pool with maxtasksperchild to prevent Tesseract memory leaks
             with Pool(processes=num_workers, maxtasksperchild=50) as pool:
-                results = []
-                for i, result in enumerate(pool.imap_unordered(ocr_single_card, cards_to_ocr, chunksize=10)):
-                    results.append(result)
+                for result in pool.imap_unordered(ocr_single_card, cards_to_ocr, chunksize=10):
                     global_idx, s_no, data, pdf_name = result
                     ocr_results[global_idx] = (s_no, data, pdf_name)
                     checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
@@ -565,9 +578,9 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
                     if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
                         elapsed_str = format_time(get_elapsed())
-                        rate = completed_ocr / max(1, get_elapsed())
-                        remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate)
-                        log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} ({elapsed_str}, ~{format_time(remaining)} left)")
+                        rate = (completed_ocr - len(completed_indices)) / max(1, get_elapsed() - elapsed_before)
+                        remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate) if rate > 0 else 0
+                        log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} [{elapsed_str}, ~{format_time(remaining)} left]")
 
                     if completed_ocr % 500 == 0:
                         checkpoint.data['elapsed_before_resume'] = get_elapsed()
@@ -603,9 +616,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
 
-            # Use multiprocessing.Pool with maxtasksperchild
-            from multiprocessing import Pool
-
+            # Use Pool with maxtasksperchild for enhanced OCR
             with Pool(processes=num_workers, maxtasksperchild=20) as pool:
                 for result in pool.imap_unordered(enhanced_ocr_age_gender, cards_to_fix, chunksize=5):
                     global_idx, enhanced_data = result
@@ -621,10 +632,15 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                             checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
 
                     fixed_count += 1
-                    if fixed_count % 50 == 0:
+                    if fixed_count % 50 == 0 or fixed_count == len(cards_to_fix):
                         log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
 
+                if fixed_count % 100 == 0:
+                    checkpoint.save()
+
             checkpoint.save()
+        else:
+            log("  No cards need fixing")
 
         checkpoint.data['phase'] = 3
         checkpoint.save()
@@ -732,13 +748,12 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
     # Send completion notification
     send_notification(
-        "✅ Processing Complete!",
+        "Processing Complete!",
         f"Constituency: {constituency_name}\n"
         f"Total Cards: {total_cards:,}\n"
         f"Missing Age: {missing_age_count:,} ({missing_age_count/total_cards*100:.1f}%)\n"
         f"Missing Gender: {missing_gender_count:,} ({missing_gender_count/total_cards*100:.1f}%)\n"
-        f"Time: {format_time(elapsed_total)}\n"
-        f"Excel ready for download!"
+        f"Time: {format_time(elapsed_total)}"
     )
 
     log("=" * 50)
@@ -749,13 +764,17 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor')
+    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v6.0')
     parser.add_argument('folder', help='Path to constituency folder containing PDFs')
     parser.add_argument('--ntfy-topic', help='Ntfy topic for notifications')
-    parser.add_argument('--workers', type=int, help='Number of worker processes')
+    parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of worker processes (default: {NUM_WORKERS})')
     parser.add_argument('--no-cleanup', action='store_true', help='Keep temp files after processing')
 
     args = parser.parse_args()
+
+    log(f"Voter Analytics Headless Processor v6.0")
+    log(f"Multiprocessing start method: spawn")
+    log(f"Workers: {args.workers}")
 
     success = process_constituency(
         args.folder,
@@ -768,7 +787,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # Use spawn method (same as Windows) to avoid fork issues with Tesseract
-    multiprocessing.set_start_method('spawn', force=True)
     multiprocessing.freeze_support()
     main()
