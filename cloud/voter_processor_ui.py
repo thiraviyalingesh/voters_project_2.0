@@ -93,21 +93,32 @@ def get_completed_files():
             })
     return sorted(files, key=lambda x: x['modified'], reverse=True)
 
-def send_notification(title, message):
-    """Send push notification via Ntfy."""
-    if NTFY_TOPIC:
-        try:
-            requests.post(
-                f"https://ntfy.sh/{NTFY_TOPIC}",
-                headers={"Title": title},
-                data=message.encode('utf-8'),
-                timeout=10
-            )
-        except:
-            pass
+def send_notification(title, message, topic=None):
+    """Send push notification via Ntfy.
 
-def kill_process():
-    """Kill the running processor."""
+    Returns True if sent successfully, False otherwise.
+    """
+    topic = topic or NTFY_TOPIC
+    if not topic:
+        return False
+    try:
+        response = requests.post(
+            f"https://ntfy.sh/{topic}",
+            headers={"Title": title},
+            data=message.encode('utf-8'),
+            timeout=10
+        )
+        return response.status_code == 200
+    except Exception as e:
+        return False
+
+def kill_process(reset_history=False):
+    """Kill the running processor.
+
+    Args:
+        reset_history: If True, clears completed/errors/queue history.
+                      If False, preserves history (default).
+    """
     status = load_status()
     if status.get('pid'):
         try:
@@ -130,9 +141,17 @@ def kill_process():
     except:
         pass
 
+    # Always reset current processing state
     status['processing'] = False
     status['current_constituency'] = None
     status['pid'] = None
+
+    # Optionally reset history
+    if reset_history:
+        status['queue'] = []
+        status['completed'] = []
+        status['errors'] = []
+
     save_status(status)
     return True
 
@@ -281,16 +300,20 @@ st.markdown("---")
 with st.sidebar:
     st.header("⚙️ Settings")
 
-    new_topic = st.text_input("Ntfy Topic", value=NTFY_TOPIC)
-    if new_topic != NTFY_TOPIC:
-        st.info("Restart app to apply new topic")
+    ntfy_topic = st.text_input("Ntfy Topic", value=NTFY_TOPIC)
 
     st.markdown("---")
 
     st.subheader("📱 Test Notification")
     if st.button("Send Test"):
-        send_notification("🔔 Test", "Notification test from Voter Analytics!")
-        st.success("Sent!")
+        if not ntfy_topic:
+            st.error("Enter a topic first!")
+        else:
+            success = send_notification("Test", "Notification test from Voter Analytics!", topic=ntfy_topic)
+            if success:
+                st.success(f"Sent to {ntfy_topic}!")
+            else:
+                st.error("Failed to send! Check topic name.")
 
     st.markdown("---")
 
@@ -461,18 +484,31 @@ with tab2:
         else:
             st.progress(0.1, text="Starting...")
 
-        col_btn1, col_btn2 = st.columns(2)
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
         with col_btn1:
             if st.button("🔄 Refresh"):
                 st.rerun()
         with col_btn2:
-            if st.button("🛑 Kill Process", type="primary"):
-                kill_process()
-                st.success("Process killed!")
+            if st.button("🛑 Kill", help="Kill process, keep history"):
+                kill_process(reset_history=False)
+                st.success("Process killed! History preserved.")
+                time.sleep(1)
+                st.rerun()
+        with col_btn3:
+            if st.button("🗑️ Kill & Reset", type="primary", help="Kill process and clear all history"):
+                kill_process(reset_history=True)
+                st.success("Process killed! History cleared.")
                 time.sleep(1)
                 st.rerun()
     else:
         st.info("No active processing")
+
+        # Show reset button even when not processing (to fix stuck status)
+        if st.button("🔧 Reset Stuck Status", help="Use if status shows processing but nothing is running"):
+            kill_process(reset_history=False)
+            st.success("Status reset! History preserved.")
+            time.sleep(1)
+            st.rerun()
 
     # Queue
     st.subheader("📋 Queue")

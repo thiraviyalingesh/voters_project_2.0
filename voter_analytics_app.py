@@ -89,33 +89,41 @@ class VoterAnalyticsDashboard:
         export_btn = ttk.Button(top_frame, text="Export PDF", command=self.export_pdf)
         export_btn.pack(side=tk.LEFT, padx=(5, 0))
 
-        # Stats frame (Total, Male, Female)
+        # Stats frame (Total + Percentages only)
         stats_frame = ttk.Frame(main_frame)
         stats_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Create stat boxes
+        # Create stat boxes - only Total and percentages
         self.create_stat_box(stats_frame, "total_box", "Total Voters", "#2196F3", 0)
-        self.create_stat_box(stats_frame, "male_box", "Male", "#1565C0", 1)
-        self.create_stat_box(stats_frame, "female_box", "Female", "#E91E63", 2)
-        self.create_stat_box(stats_frame, "male_pct_box", "Male %", "#42A5F5", 3)
-        self.create_stat_box(stats_frame, "female_pct_box", "Female %", "#F06292", 4)
+        self.create_stat_box(stats_frame, "male_pct_box", "Male %", "#1565C0", 1)
+        self.create_stat_box(stats_frame, "female_pct_box", "Female %", "#E91E63", 2)
+        self.create_stat_box(stats_frame, "other_pct_box", "Third Gender %", "#FF5722", 3)
 
         # Charts container
         charts_frame = ttk.Frame(main_frame)
         charts_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Top row charts (Pie + Stacked Bar)
+        # Top row charts (Gender Pie + Religion Pie + Stacked Bar)
         top_charts_frame = ttk.Frame(charts_frame)
         top_charts_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
 
-        # Pie chart frame (left)
+        # Gender Pie chart frame (left)
         pie_frame = ttk.LabelFrame(top_charts_frame, text="Gender Distribution", padding="5")
         pie_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
-        self.pie_fig = Figure(figsize=(4, 3.5), dpi=100)
+        self.pie_fig = Figure(figsize=(3.5, 3.5), dpi=100)
         self.pie_ax = self.pie_fig.add_subplot(111)
         self.pie_canvas = FigureCanvasTkAgg(self.pie_fig, master=pie_frame)
         self.pie_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Religion Pie chart frame (middle)
+        religion_frame = ttk.LabelFrame(top_charts_frame, text="Religion Distribution", padding="5")
+        religion_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        self.religion_fig = Figure(figsize=(3.5, 3.5), dpi=100)
+        self.religion_ax = self.religion_fig.add_subplot(111)
+        self.religion_canvas = FigureCanvasTkAgg(self.religion_fig, master=religion_frame)
+        self.religion_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # Stacked bar chart frame (right)
         stacked_frame = ttk.LabelFrame(top_charts_frame, text="Gender by Age Group", padding="5")
@@ -212,9 +220,35 @@ class VoterAnalyticsDashboard:
         if 'Age' in self.df.columns:
             self.df['Age_Clean'] = pd.to_numeric(self.df['Age'], errors='coerce')
 
-        # Standardize Gender
-        if 'Gender' in self.df.columns:
-            self.df['Gender_Clean'] = self.df['Gender'].astype(str).str.strip().str.title()
+        # Standardize Gender - check multiple possible column names
+        gender_col = None
+        for col_name in ['Gender', 'gender', 'GENDER', 'Sex', 'sex', 'SEX']:
+            if col_name in self.df.columns:
+                gender_col = col_name
+                break
+
+        if gender_col:
+            self.df['Gender_Clean'] = self.df[gender_col].astype(str).str.strip().str.title()
+            # Normalize Male variations
+            self.df.loc[self.df['Gender_Clean'].isin(['M', 'Male', 'Man', 'Boy']), 'Gender_Clean'] = 'Male'
+            # Normalize Female variations
+            self.df.loc[self.df['Gender_Clean'].isin(['F', 'Female', 'Woman', 'Girl']), 'Gender_Clean'] = 'Female'
+            # Everything else (missing, nan, empty, other) stays as-is and will be counted as Third Gender
+            # This includes: 'Nan', 'None', '', 'Other', 'Transgender', etc.
+
+        # Standardize Religion - check multiple possible column names
+        religion_col = None
+        for col_name in ['Religion', 'religion', 'RELIGION', 'Rel', 'rel', 'REL']:
+            if col_name in self.df.columns:
+                religion_col = col_name
+                break
+
+        if religion_col:
+            self.df['Religion_Clean'] = self.df[religion_col].astype(str).str.strip().str.title()
+            # Replace 'Nan' string with empty
+            self.df.loc[self.df['Religion_Clean'].str.lower() == 'nan', 'Religion_Clean'] = ''
+            self.df.loc[self.df['Religion_Clean'] == 'None', 'Religion_Clean'] = ''
+            self.df.loc[self.df['Religion_Clean'] == '', 'Religion_Clean'] = 'Unknown'
 
     def parse_age_ranges(self, range_string):
         """Parse age range string like '18-25,26-35,36+' into list of tuples."""
@@ -273,8 +307,38 @@ class VoterAnalyticsDashboard:
             female_count = (df['Gender_Clean'] == 'Female').sum()
             other_count = total - male_count - female_count
 
-        male_pct = (male_count / total * 100) if total > 0 else 0
-        female_pct = (female_count / total * 100) if total > 0 else 0
+        male_pct_raw = (male_count / total * 100) if total > 0 else 0
+        female_pct_raw = (female_count / total * 100) if total > 0 else 0
+        other_pct_raw = (other_count / total * 100) if total > 0 else 0
+
+        # Round to 2 decimal places and adjust largest to ensure sum = 100.00%
+        male_pct = round(male_pct_raw, 2)
+        female_pct = round(female_pct_raw, 2)
+        other_pct = round(other_pct_raw, 2)
+
+        # Fix rounding error - adjust the largest percentage
+        total_pct = male_pct + female_pct + other_pct
+        if total_pct != 100.0 and total > 0:
+            diff = round(100.0 - total_pct, 2)
+            # Adjust the largest percentage
+            if male_pct >= female_pct and male_pct >= other_pct:
+                male_pct = round(male_pct + diff, 2)
+            elif female_pct >= male_pct and female_pct >= other_pct:
+                female_pct = round(female_pct + diff, 2)
+            else:
+                other_pct = round(other_pct + diff, 2)
+
+        # Religion stats
+        religion_stats = {}
+        if 'Religion_Clean' in df.columns:
+            religion_counts = df['Religion_Clean'].value_counts()
+            for religion, count in religion_counts.items():
+                religion_str = str(religion).strip().lower()
+                if religion and religion_str and religion_str != 'nan' and religion_str != 'none' and religion_str != '':
+                    religion_stats[religion] = {
+                        'count': count,
+                        'pct': (count / total * 100) if total > 0 else 0
+                    }
 
         # Store stats for PDF
         self.current_stats = {
@@ -284,18 +348,20 @@ class VoterAnalyticsDashboard:
             'other_count': other_count,
             'male_pct': male_pct,
             'female_pct': female_pct,
-            'constituency': self.constituency_var.get()
+            'other_pct': other_pct,
+            'constituency': self.constituency_var.get(),
+            'religion_stats': religion_stats
         }
 
-        # Update stat boxes
+        # Update stat boxes (percentages only) - all use 2 decimal places to add up to 100.00%
         self.total_box_var.set(f"{total:,}")
-        self.male_box_var.set(f"{male_count:,}")
-        self.female_box_var.set(f"{female_count:,}")
-        self.male_pct_box_var.set(f"{male_pct:.1f}%")
-        self.female_pct_box_var.set(f"{female_pct:.1f}%")
+        self.male_pct_box_var.set(f"{male_pct:.2f}%")
+        self.female_pct_box_var.set(f"{female_pct:.2f}%")
+        self.other_pct_box_var.set(f"{other_pct:.2f}%")
 
         # Update all charts
         self.update_pie_chart(df, male_count, female_count, other_count)
+        self.update_religion_chart(df)
         self.update_stacked_chart(df)
         self.update_bar_chart(df)
 
@@ -303,34 +369,36 @@ class VoterAnalyticsDashboard:
         """Update the gender distribution pie chart."""
         self.pie_ax.clear()
 
-        # Prepare data
+        # Prepare data - Other includes all unknown/missing gender (Third Gender)
+        # This ensures Male + Female + Third Gender = Total (100%)
         labels = []
         sizes = []
         colors = []
         explode = []
 
         if male_count > 0:
-            labels.append(f'Male\n{male_count:,}')
+            labels.append('Male')
             sizes.append(male_count)
             colors.append('#1565C0')
             explode.append(0.02)
 
         if female_count > 0:
-            labels.append(f'Female\n{female_count:,}')
+            labels.append('Female')
             sizes.append(female_count)
             colors.append('#E91E63')
             explode.append(0.02)
 
         if other_count > 0:
-            labels.append(f'Other\n{other_count:,}')
+            labels.append('Third Gender')
             sizes.append(other_count)
-            colors.append('#9E9E9E')
+            colors.append('#FF5722')  # Bright orange for high visibility
             explode.append(0.02)
 
         if sizes:
+            # Use 2 decimal places to show small percentages like 0.25%
             wedges, texts, autotexts = self.pie_ax.pie(
                 sizes, labels=labels, colors=colors, explode=explode,
-                autopct='%1.1f%%', startangle=90,
+                autopct='%1.2f%%', startangle=90,
                 textprops={'fontsize': 9, 'fontweight': 'bold'}
             )
             for autotext in autotexts:
@@ -342,6 +410,69 @@ class VoterAnalyticsDashboard:
 
         self.pie_fig.tight_layout()
         self.pie_canvas.draw()
+
+    def update_religion_chart(self, df):
+        """Update the religion distribution pie chart."""
+        self.religion_ax.clear()
+
+        if 'Religion_Clean' not in df.columns:
+            self.religion_ax.text(0.5, 0.5, 'No Religion Data', ha='center', va='center',
+                                   fontsize=12, transform=self.religion_ax.transAxes)
+            self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+                                        fontsize=11, fontweight='bold', pad=10)
+            self.religion_fig.tight_layout()
+            self.religion_canvas.draw()
+            return
+
+        # Get religion counts
+        religion_counts = df['Religion_Clean'].value_counts()
+
+        # Filter out empty/nan values but keep 'Unknown'
+        religion_counts = religion_counts[
+            (religion_counts.index != '') &
+            (religion_counts.index.str.lower() != 'nan') &
+            (religion_counts.index.str.lower() != 'none')
+        ]
+
+        if len(religion_counts) == 0:
+            self.religion_ax.text(0.5, 0.5, 'No Religion Data', ha='center', va='center',
+                                   fontsize=12, transform=self.religion_ax.transAxes)
+            self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+                                        fontsize=11, fontweight='bold', pad=10)
+            self.religion_fig.tight_layout()
+            self.religion_canvas.draw()
+            return
+
+        # Prepare data - show only percentages, no counts
+        labels = []
+        sizes = []
+        # Color palette for religions
+        religion_colors = ['#4CAF50', '#FF9800', '#9C27B0', '#00BCD4', '#E91E63',
+                           '#3F51B5', '#FFEB3B', '#795548', '#607D8B', '#F44336']
+
+        for i, (religion, count) in enumerate(religion_counts.items()):
+            labels.append(religion)
+            sizes.append(count)
+
+        colors = religion_colors[:len(sizes)]
+        explode = [0.02] * len(sizes)
+
+        if sizes:
+            wedges, texts, autotexts = self.religion_ax.pie(
+                sizes, labels=labels, colors=colors, explode=explode,
+                autopct='%1.2f%%', startangle=90,
+                textprops={'fontsize': 8, 'fontweight': 'bold'}
+            )
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+                autotext.set_fontsize(7)
+
+        self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+                                    fontsize=11, fontweight='bold', pad=10)
+
+        self.religion_fig.tight_layout()
+        self.religion_canvas.draw()
 
     def update_stacked_chart(self, df):
         """Update the stacked bar chart showing gender by age group."""
@@ -373,10 +504,10 @@ class VoterAnalyticsDashboard:
         bars1 = self.stacked_ax.bar(x, male_counts, width, label='Male', color='#1565C0')
         bars2 = self.stacked_ax.bar(x, female_counts, width, bottom=male_counts, label='Female', color='#E91E63')
 
-        # Add other if exists
+        # Add Third Gender if exists
         if sum(other_counts) > 0:
             bottom = [m + f for m, f in zip(male_counts, female_counts)]
-            bars3 = self.stacked_ax.bar(x, other_counts, width, bottom=bottom, label='Other', color='#9E9E9E')
+            bars3 = self.stacked_ax.bar(x, other_counts, width, bottom=bottom, label='Third Gender', color='#FF5722')
 
         # Add value labels on bars
         for i, (m, f) in enumerate(zip(male_counts, female_counts)):
@@ -488,42 +619,54 @@ class VoterAnalyticsDashboard:
                 fig1.text(0.5, 0.94, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                          ha='center', fontsize=10)
 
-                # Summary stats as text
+                # Summary stats as text - all percentages use 2 decimals to add up to 100.00%
                 stats_text = f"""
 Summary Statistics
 ══════════════════════════════════════
 Total Voters:     {self.current_stats['total']:,}
-Male Voters:      {self.current_stats['male_count']:,} ({self.current_stats['male_pct']:.1f}%)
-Female Voters:    {self.current_stats['female_count']:,} ({self.current_stats['female_pct']:.1f}%)
-Other:            {self.current_stats['other_count']:,}
+Male Voters:      {self.current_stats['male_count']:,} ({self.current_stats['male_pct']:.2f}%)
+Female Voters:    {self.current_stats['female_count']:,} ({self.current_stats['female_pct']:.2f}%)
+Third Gender:     {self.current_stats['other_count']:,} ({self.current_stats['other_pct']:.2f}%)
 ══════════════════════════════════════
                 """
-                fig1.text(0.1, 0.75, stats_text, fontsize=12, family='monospace',
+
+                # Add religion stats if available
+                religion_stats = self.current_stats.get('religion_stats', {})
+                if religion_stats:
+                    stats_text += """
+Religion Distribution
+══════════════════════════════════════
+"""
+                    for religion, data in religion_stats.items():
+                        stats_text += f"{religion:15} {data['count']:>8,} ({data['pct']:.2f}%)\n"
+                    stats_text += "══════════════════════════════════════"
+
+                fig1.text(0.1, 0.80, stats_text, fontsize=11, family='monospace',
                          verticalalignment='top')
 
-                # Pie chart
+                # Pie chart - percentages only (no counts)
                 ax1 = fig1.add_axes([0.55, 0.45, 0.4, 0.4])
                 labels = []
                 sizes = []
                 colors = []
 
                 if self.current_stats['male_count'] > 0:
-                    labels.append(f"Male\n{self.current_stats['male_count']:,}")
+                    labels.append("Male")
                     sizes.append(self.current_stats['male_count'])
                     colors.append('#1565C0')
 
                 if self.current_stats['female_count'] > 0:
-                    labels.append(f"Female\n{self.current_stats['female_count']:,}")
+                    labels.append("Female")
                     sizes.append(self.current_stats['female_count'])
                     colors.append('#E91E63')
 
                 if self.current_stats['other_count'] > 0:
-                    labels.append(f"Other\n{self.current_stats['other_count']:,}")
+                    labels.append("Third Gender")
                     sizes.append(self.current_stats['other_count'])
-                    colors.append('#9E9E9E')
+                    colors.append('#FF5722')  # Bright orange for high visibility
 
                 if sizes:
-                    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%',
+                    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.2f%%',
                            startangle=90, textprops={'fontsize': 9})
                 ax1.set_title('Gender Distribution', fontsize=12, fontweight='bold')
 
@@ -564,13 +707,17 @@ Other:            {self.current_stats['other_count']:,}
                     age_labels = []
                     male_counts = []
                     female_counts = []
+                    other_counts = []
 
                     for start, end, label in self.age_ranges:
                         mask = (df['Age_Clean'] >= start) & (df['Age_Clean'] <= end)
                         age_df = df[mask]
                         age_labels.append(label)
-                        male_counts.append((age_df['Gender_Clean'] == 'Male').sum())
-                        female_counts.append((age_df['Gender_Clean'] == 'Female').sum())
+                        m = (age_df['Gender_Clean'] == 'Male').sum()
+                        f = (age_df['Gender_Clean'] == 'Female').sum()
+                        male_counts.append(m)
+                        female_counts.append(f)
+                        other_counts.append(len(age_df) - m - f)
 
                     x = range(len(age_labels))
                     width = 0.6
@@ -578,8 +725,14 @@ Other:            {self.current_stats['other_count']:,}
                     ax2.bar(x, male_counts, width, label='Male', color='#1565C0')
                     ax2.bar(x, female_counts, width, bottom=male_counts, label='Female', color='#E91E63')
 
+                    # Add Third Gender if exists
+                    if sum(other_counts) > 0:
+                        bottom = [m + f for m, f in zip(male_counts, female_counts)]
+                        ax2.bar(x, other_counts, width, bottom=bottom, label='Third Gender', color='#FF5722')
+
                     for i, (m, f) in enumerate(zip(male_counts, female_counts)):
-                        ax2.annotate(f'{m+f:,}', xy=(i, m+f), xytext=(0, 3),
+                        total_val = m + f + other_counts[i]
+                        ax2.annotate(f'{total_val:,}', xy=(i, total_val), xytext=(0, 3),
                                     textcoords="offset points", ha='center', va='bottom',
                                     fontsize=9, fontweight='bold')
 
@@ -635,6 +788,40 @@ Other:            {self.current_stats['other_count']:,}
                 fig3.tight_layout()
                 pdf.savefig(fig3)
                 plt.close(fig3)
+
+                # Page 4: Religion Distribution (if available)
+                religion_stats = self.current_stats.get('religion_stats', {})
+                if religion_stats:
+                    fig4 = Figure(figsize=(11, 8.5), dpi=100)
+                    ax4 = fig4.add_subplot(111)
+
+                    labels = []
+                    sizes = []
+                    religion_colors = ['#4CAF50', '#FF9800', '#9C27B0', '#00BCD4', '#E91E63',
+                                       '#3F51B5', '#FFEB3B', '#795548', '#607D8B', '#F44336']
+
+                    for religion, data in religion_stats.items():
+                        labels.append(religion)
+                        sizes.append(data['count'])
+
+                    colors = religion_colors[:len(sizes)]
+
+                    if sizes:
+                        wedges, texts, autotexts = ax4.pie(
+                            sizes, labels=labels, colors=colors,
+                            autopct='%1.2f%%', startangle=90,
+                            textprops={'fontsize': 10, 'fontweight': 'bold'}
+                        )
+                        for autotext in autotexts:
+                            autotext.set_color('white')
+                            autotext.set_fontweight('bold')
+
+                    ax4.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+                                 fontsize=14, fontweight='bold', pad=15)
+
+                    fig4.tight_layout()
+                    pdf.savefig(fig4)
+                    plt.close(fig4)
 
             self.status_var.set(f"PDF exported: {Path(file_path).name}")
             messagebox.showinfo("Success", f"PDF report saved to:\n{file_path}")
