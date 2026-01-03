@@ -4,16 +4,42 @@
 # Run this on a fresh Ubuntu 22.04 VM
 #
 # Usage:
+#   # Default port 8501:
 #   curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash
-#   OR
-#   wget -qO- https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash
+#
+#   # Custom port (e.g., 8080):
+#   curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash -s -- --port 8080
 #
 
 set -e  # Exit on error
 
+# ============== CONFIGURATION ==============
+# Change this to use a different port
+STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --port)
+            STREAMLIT_PORT="$2"
+            shift 2
+            ;;
+        *)
+            # If it's a URL, it's the repo URL
+            if [[ "$1" == http* ]]; then
+                CUSTOM_REPO="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+# ============================================
+
 echo "=============================================="
 echo "  Voter Analytics - Setup Script v2.0"
 echo "=============================================="
+echo ""
+echo "Port: $STREAMLIT_PORT"
 echo ""
 
 # Colors for output
@@ -72,7 +98,7 @@ echo "Step 3/7: Setting up project directory..."
 
 # Default repo URL
 DEFAULT_REPO="https://github.com/vinayaklearnsML2022/voters_project.git"
-REPO_URL="${1:-$DEFAULT_REPO}"
+REPO_URL="${CUSTOM_REPO:-$DEFAULT_REPO}"
 
 echo "Cloning from: $REPO_URL"
 if [ -d ~/voter_analytics ]; then
@@ -131,7 +157,7 @@ Type=simple
 User=$CURRENT_USER
 WorkingDirectory=$HOME_DIR/voter_analytics
 Environment="PATH=$HOME_DIR/voter_analytics/venv/bin"
-ExecStart=$HOME_DIR/voter_analytics/venv/bin/streamlit run cloud/voter_processor_ui.py --server.port 8501 --server.address 0.0.0.0
+ExecStart=$HOME_DIR/voter_analytics/venv/bin/streamlit run cloud/voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0
 Restart=always
 RestartSec=10
 
@@ -146,8 +172,8 @@ print_status "Auto-start service configured"
 echo ""
 echo "Step 7/7: Configuring firewall..."
 if command -v ufw &> /dev/null; then
-    sudo ufw allow 8501/tcp 2>/dev/null || true
-    print_status "Firewall rule added for port 8501"
+    sudo ufw allow ${STREAMLIT_PORT}/tcp 2>/dev/null || true
+    print_status "Firewall rule added for port $STREAMLIT_PORT"
 else
     print_warning "UFW not installed, skipping firewall configuration"
 fi
@@ -162,19 +188,19 @@ echo "Quick Start (if files already exist):"
 echo ""
 echo "  cd ~/voter_analytics"
 echo "  source venv/bin/activate"
-echo "  streamlit run cloud/voter_processor_ui.py --server.port 8501 --server.address 0.0.0.0"
+echo "  streamlit run cloud/voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0"
 echo ""
 echo "OR use systemd service:"
 echo ""
 echo "  sudo systemctl start voter-analytics"
 echo "  sudo systemctl enable voter-analytics"
 echo ""
-echo "Access Web UI at: http://YOUR_VM_IP:8501"
+echo "Access Web UI at: http://YOUR_VM_IP:$STREAMLIT_PORT"
 echo ""
 echo "----------------------------------------------"
 echo "GCP Firewall (if not done):"
 echo "  gcloud compute firewall-rules create allow-streamlit \\"
-echo "    --allow tcp:8501 --direction INGRESS"
+echo "    --allow tcp:$STREAMLIT_PORT --direction INGRESS"
 echo ""
 echo "----------------------------------------------"
 echo "To update code later:"
