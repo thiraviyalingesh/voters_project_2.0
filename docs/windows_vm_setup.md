@@ -127,19 +127,22 @@ If you want to access Web UI from your PC:
 1. In Windows VM, open **Windows Defender Firewall**
 2. Click **Advanced settings**
 3. **Inbound Rules → New Rule**
-4. Port → TCP → 8501 → Allow → Name: "Streamlit"
+4. Port → TCP → 8052 → Allow → Name: "Streamlit"
 
 5. In GCP Console:
    - VPC Network → Firewall → Create Rule
-   - Allow TCP 8501 from 0.0.0.0/0
+   - Allow TCP 8052 from 0.0.0.0/0
+   ```powershell
+   gcloud compute firewall-rules create allow-streamlit-8052 --allow tcp:8052 --direction INGRESS
+   ```
 
 6. Run Streamlit:
    ```powershell
    cd C:\voters_project\cloud
-   streamlit run voter_processor_ui.py --server.port 8501 --server.address 0.0.0.0
+   streamlit run voter_processor_ui.py --server.port 8052 --server.address 0.0.0.0
    ```
 
-7. Access from your PC: `http://VM_EXTERNAL_IP:8501`
+7. Access from your PC: `http://VM_EXTERNAL_IP:8052`
 
 ---
 

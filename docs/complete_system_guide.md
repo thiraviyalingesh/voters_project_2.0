@@ -80,8 +80,11 @@ A cloud-based system to extract voter data from Tamil Nadu Electoral Roll PDFs u
 
 ```bash
 # Download and run setup script (ONE command)
-curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash
+# Use tr -d '\r' to fix Windows line endings
+curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | tr -d '\r' | bash -s -- --port 8052
 ```
+
+**Custom port:** Change `8052` to any port you want.
 
 **What this installs:**
 - Python 3.10+
@@ -103,11 +106,17 @@ curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/m
 
 ### Phase 2: Daily Usage (No Terminal Needed!)
 
-#### 2.1 Access Web UI
+#### 2.1 Start Streamlit
+
+```bash
+cd ~/voter_analytics && source venv/bin/activate && nohup streamlit run cloud/voter_processor_ui.py --server.port 8052 --server.address 0.0.0.0 > ~/streamlit.log 2>&1 &
+```
+
+#### 2.2 Access Web UI
 
 Open browser and go to:
 ```
-http://YOUR_VM_IP:8501
+http://YOUR_VM_IP:8052
 ```
 
 You'll see:
@@ -448,8 +457,18 @@ Each VM:
 
 ### Start Web UI (if stopped)
 ```bash
-cd ~/voter_analytics
-streamlit run voter_processor_ui.py --server.port 8501
+cd ~/voter_analytics && source venv/bin/activate
+nohup streamlit run cloud/voter_processor_ui.py --server.port 8052 --server.address 0.0.0.0 > ~/streamlit.log 2>&1 &
+```
+
+### Kill Streamlit
+```bash
+pkill -f streamlit
+```
+
+### Reset Stuck Status
+```bash
+echo '{"processing": false, "current_constituency": null, "pid": null, "queue": [], "completed": [], "errors": []}' > ~/voter_analytics/.processing_status.json
 ```
 
 ### Check Processing Status
