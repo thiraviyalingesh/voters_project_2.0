@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Voter Analytics - Headless Batch Processor v8.1 (Ubuntu VM Optimized)
+Voter Analytics - Headless Batch Processor v8.2 (Ubuntu VM Optimized)
 Based on v4.0 Windows version with Linux multiprocessing fixes.
+v8.2: Fixed semaphore leak + checkpoint saves every 50 cards in Phase 3
 
 Features:
 - Phase 1: PDF extraction
@@ -29,6 +30,7 @@ import json
 import requests
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import gc
 
 # Import image processing libraries
 import fitz  # PyMuPDF
@@ -502,6 +504,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         checkpoint.data['phase'] = 2
         checkpoint.save()
         current_phase = 2
+        gc.collect()  # Clean up multiprocessing resources
         log(f"  Phase 2 complete: {len(ocr_results):,} cards OCR'd")
     else:
         all_cards = checkpoint.data.get('all_cards', [])
@@ -548,11 +551,13 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                         fixed_count += 1
                         if fixed_count % 50 == 0 or fixed_count == len(cards_to_fix):
                             log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
+                            checkpoint.save()  # Save progress every 50 cards
                     except Exception as e:
                         log(f"  Enhanced OCR error: {e}")
                         fixed_count += 1
 
             checkpoint.save()
+            gc.collect()  # Clean up multiprocessing resources
         else:
             log("  No cards need fixing")
 
@@ -666,7 +671,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.1')
+    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.2')
     parser.add_argument('folder', help='Path to constituency folder containing PDFs')
     parser.add_argument('--ntfy-topic', help='Ntfy topic for notifications')
     parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of workers (default: {NUM_WORKERS})')
@@ -674,7 +679,7 @@ def main():
 
     args = parser.parse_args()
 
-    log(f"Voter Analytics Headless Processor v8.1")
+    log(f"Voter Analytics Headless Processor v8.2")
     log(f"Using spawn context with OMP_THREAD_LIMIT=1")
     log(f"Workers: {args.workers}")
 
