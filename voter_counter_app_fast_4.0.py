@@ -1,16 +1,19 @@
 """
-Electoral Roll Voter Counter - GUI Application v4.0 (FAST VERSION)
+Electoral Roll Voter Counter - GUI Application v4.1 (FAST VERSION)
 Extracts voter counts from Tamil Nadu Electoral Roll PDFs
 Optimized with parallel processing for faster OCR
 Supports batch processing of entire constituency folders
 Features checkpoint/resume capability for interrupted sessions
 
+v4.1 Features:
+- Enhanced OCR now fixes Name, Age & Gender (was Age & Gender only)
+- Phase 3 fixes missing Name/Age/Gender with multiple OCR approaches
+
 v4.0 Features:
 - Added "Part No." column to track source PDF for each voter card
 - Part number extracted from PDF filename (e.g., TAM-1-WI.pdf → Part No. 1)
 - Keeps extracted card images (no deletion)
-- Enhanced OCR focused on Age & Gender only
-- Validation report for missing Age/Gender
+- Validation report for missing Name/Age/Gender
 - Source tracking: "Source Folder" and "Card File" columns for traceability
 - Phase 1 optimizations: all CPU cores, PNG format, batch writes, sampled brightness check
 """
@@ -116,16 +119,16 @@ def ocr_single_card(args):
         return global_idx, stem, None, pdf_name
 
 
-def enhanced_ocr_age_gender(args):
-    """Worker function for enhanced OCR focused on Age and Gender only."""
-    jpg_path, global_idx = args
+def enhanced_ocr_name_age_gender(args):
+    """Worker function for enhanced OCR focused on Name, Age and Gender."""
+    jpg_path, global_idx, need_name, need_age, need_gender = args
     try:
         # Handle both Path objects and strings
         img = Image.open(str(jpg_path) if hasattr(jpg_path, 'stem') else jpg_path)
 
-        # Crop bottom portion of card where Age/Gender typically appears
         width, height = img.size
-        # Age and Gender are usually in the bottom 30% of the card
+        # Crop regions: top for name, bottom for age/gender
+        top_crop = img.crop((0, 0, width, int(height * 0.45)))
         bottom_crop = img.crop((0, int(height * 0.65), width, height))
 
         # Try preprocessing approaches in order
@@ -137,50 +140,47 @@ def enhanced_ocr_age_gender(args):
             ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
         ]
 
-        result = {'age': '', 'gender': ''}
+        result = {'name': '', 'age': '', 'gender': ''}
 
-        for name, transform in approaches:
-            try:
-                # Try on bottom crop first (faster)
-                processed_img = transform(bottom_crop)
-                text = pytesseract.image_to_string(processed_img, lang='tam+eng')
-
-                # Extract age
-                if not result['age']:
-                    age_match = re.search(r'வயது\s*:\s*(\d+)', text)
-                    if age_match:
-                        result['age'] = age_match.group(1)
-
-                # Extract gender
-                if not result['gender']:
-                    if 'பாலினம்' in text:
-                        if 'ஆண்' in text:
-                            result['gender'] = 'Male'
-                        elif 'பெண்' in text:
-                            result['gender'] = 'Female'
-                        elif 'திருநங்கை' in text or 'மூன்றாம்' in text:
-                            result['gender'] = 'Third Gender'
-
-                # If both found, stop
-                if result['age'] and result['gender']:
-                    break
-
-            except:
-                continue
-
-        # If still missing, try full image
-        if not result['age'] or not result['gender']:
+        # Try top crop for Name
+        if need_name:
             for name, transform in approaches:
                 try:
-                    processed_img = transform(img)
+                    processed_img = transform(top_crop)
                     text = pytesseract.image_to_string(processed_img, lang='tam+eng')
 
-                    if not result['age']:
+                    if not result['name']:
+                        # Look for name pattern: பெயர் : <name>
+                        for line in text.split('\n'):
+                            if 'பெயர்' in line and ':' in line and 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line:
+                                name_part = line.split(':', 1)[-1].strip()
+                                # Clean OCR artifacts
+                                name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                if name_part and len(name_part) > 1:
+                                    result['name'] = name_part
+                                    break
+
+                    if result['name']:
+                        break
+                except:
+                    continue
+
+        # Try bottom crop for Age/Gender
+        if need_age or need_gender:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(bottom_crop)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng')
+
+                    if need_age and not result['age']:
                         age_match = re.search(r'வயது\s*:\s*(\d+)', text)
                         if age_match:
                             result['age'] = age_match.group(1)
 
-                    if not result['gender']:
+                    if need_gender and not result['gender']:
                         if 'பாலினம்' in text:
                             if 'ஆண்' in text:
                                 result['gender'] = 'Male'
@@ -189,7 +189,51 @@ def enhanced_ocr_age_gender(args):
                             elif 'திருநங்கை' in text or 'மூன்றாம்' in text:
                                 result['gender'] = 'Third Gender'
 
-                    if result['age'] and result['gender']:
+                    if (not need_age or result['age']) and (not need_gender or result['gender']):
+                        break
+                except:
+                    continue
+
+        # Try full image if still missing anything
+        still_need_name = need_name and not result['name']
+        still_need_age = need_age and not result['age']
+        still_need_gender = need_gender and not result['gender']
+
+        if still_need_name or still_need_age or still_need_gender:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(img)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng')
+
+                    if still_need_name and not result['name']:
+                        for line in text.split('\n'):
+                            if 'பெயர்' in line and ':' in line and 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line:
+                                name_part = line.split(':', 1)[-1].strip()
+                                name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                if name_part and len(name_part) > 1:
+                                    result['name'] = name_part
+                                    break
+
+                    if still_need_age and not result['age']:
+                        age_match = re.search(r'வயது\s*:\s*(\d+)', text)
+                        if age_match:
+                            result['age'] = age_match.group(1)
+
+                    if still_need_gender and not result['gender']:
+                        if 'பாலினம்' in text:
+                            if 'ஆண்' in text:
+                                result['gender'] = 'Male'
+                            elif 'பெண்' in text:
+                                result['gender'] = 'Female'
+
+                    # Check if we got everything we needed
+                    got_name = not need_name or result['name']
+                    got_age = not need_age or result['age']
+                    got_gender = not need_gender or result['gender']
+                    if got_name and got_age and got_gender:
                         break
                 except:
                     continue
@@ -550,7 +594,7 @@ class CheckpointManager:
 class VoterCounterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Electoral Roll Voter Counter v4.0 (FAST - Batch)")
+        self.root.title("Electoral Roll Voter Counter v4.1 (FAST - Batch)")
         self.root.geometry("850x800")
         self.root.resizable(True, True)
 
@@ -574,7 +618,7 @@ class VoterCounterApp:
 
         title_label = ttk.Label(
             main_frame,
-            text="Tamil Nadu Electoral Roll\nVoter Counter v4.0 (Batch Mode)",
+            text="Tamil Nadu Electoral Roll\nVoter Counter v4.1 (Batch Mode)",
             style='Title.TLabel',
             justify=tk.CENTER
         )
@@ -648,7 +692,7 @@ class VoterCounterApp:
         ttk.Label(stats_inner, textvariable=self.time_var, style='Big.TLabel', foreground='#4CAF50').grid(row=3, column=1, sticky=tk.E, pady=3, padx=10)
 
         # Data Quality frame
-        quality_frame = ttk.LabelFrame(main_frame, text="Data Quality (Age & Gender)", padding="10")
+        quality_frame = ttk.LabelFrame(main_frame, text="Data Quality (Name, Age & Gender)", padding="10")
         quality_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         quality_grid = ttk.Frame(quality_frame)
@@ -1015,9 +1059,9 @@ class VoterCounterApp:
             all_cards = self.checkpoint.get_all_cards()
             ocr_results = self.checkpoint.get_ocr_results()
 
-        # ===== PHASE 3: Enhanced OCR for missing Age/Gender ONLY =====
+        # ===== PHASE 3: Enhanced OCR for missing Name/Age/Gender =====
         if current_phase < 3:
-            self.root.after(0, lambda: self.phase_var.set("Phase 3/4: Fixing missing Age/Gender..."))
+            self.root.after(0, lambda: self.phase_var.set("Phase 3/4: Fixing missing Name/Age/Gender..."))
             self.root.after(0, lambda: self.progress.config(value=0))
 
             enhanced_done = set(self.checkpoint.data.get('enhanced_ocr_done', []))
@@ -1027,19 +1071,20 @@ class VoterCounterApp:
                 if global_idx in enhanced_done:
                     continue
                 if data:
-                    missing_age = not data.get('age')
-                    missing_gender = not data.get('gender')
-                    if missing_age or missing_gender:
+                    need_name = not data.get('name')
+                    need_age = not data.get('age')
+                    need_gender = not data.get('gender')
+                    if need_name or need_age or need_gender:
                         card_info = all_cards[global_idx]
                         jpg_path = card_info[0]
-                        cards_to_fix.append((jpg_path, global_idx))
+                        cards_to_fix.append((jpg_path, global_idx, need_name, need_age, need_gender))
 
             if cards_to_fix:
                 total_to_fix = len(cards_to_fix)
                 fixed_count = 0
 
                 with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-                    futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
+                    futures = {executor.submit(enhanced_ocr_name_age_gender, card): card[1] for card in cards_to_fix}
 
                     for future in as_completed(futures):
                         if self.stop_requested:
@@ -1053,6 +1098,8 @@ class VoterCounterApp:
                             if enhanced_data and global_idx in ocr_results:
                                 s_no, old_data, pdf_name = ocr_results[global_idx]
                                 if old_data:
+                                    if not old_data.get('name') and enhanced_data.get('name'):
+                                        old_data['name'] = enhanced_data['name']
                                     if not old_data.get('age') and enhanced_data.get('age'):
                                         old_data['age'] = enhanced_data['age']
                                     if not old_data.get('gender') and enhanced_data.get('gender'):
@@ -1110,6 +1157,7 @@ class VoterCounterApp:
             cell.alignment = Alignment(horizontal='center')
 
         row_num = 2
+        missing_name_count = 0
         missing_age_count = 0
         missing_gender_count = 0
 
@@ -1125,7 +1173,13 @@ class VoterCounterApp:
 
             if data:
                 ws.cell(row=row_num, column=3, value=data.get('voter_id', ''))
-                ws.cell(row=row_num, column=4, value=data.get('name', ''))
+
+                name_val = data.get('name', '')
+                name_cell = ws.cell(row=row_num, column=4, value=name_val)
+                if not name_val:
+                    name_cell.fill = yellow_fill
+                    missing_name_count += 1
+
                 ws.cell(row=row_num, column=5, value=data.get('relation_type', ''))
                 ws.cell(row=row_num, column=6, value=data.get('relation_name', ''))
                 ws.cell(row=row_num, column=7, value=data.get('house_no', ''))
@@ -1145,8 +1199,9 @@ class VoterCounterApp:
             else:
                 for col in range(3, 10):
                     cell = ws.cell(row=row_num, column=col, value='')
-                    if col in [8, 9]:
+                    if col in [4, 8, 9]:  # Name, Age, Gender columns
                         cell.fill = yellow_fill
+                missing_name_count += 1
                 missing_age_count += 1
                 missing_gender_count += 1
 
@@ -1171,16 +1226,17 @@ class VoterCounterApp:
 
         # Update quality display
         total_cards_final = len(ocr_results)
-        complete = total_cards_final - max(missing_age_count, missing_gender_count)
-        missing_total = max(missing_age_count, missing_gender_count)
+        max_missing = max(missing_name_count, missing_age_count, missing_gender_count)
+        complete = total_cards_final - max_missing
         completeness = (complete / total_cards_final * 100) if total_cards_final > 0 else 0
 
         self.root.after(0, lambda: self.complete_rows_var.set(f"{complete:,}"))
-        self.root.after(0, lambda: self.missing_rows_var.set(f"{missing_total:,}"))
+        self.root.after(0, lambda: self.missing_rows_var.set(f"{max_missing:,}"))
         self.root.after(0, lambda: self.completeness_var.set(f"{completeness:.1f}%"))
 
         report = (
             f"Total: {total_cards_final:,}\n"
+            f"Missing Name: {missing_name_count:,}\n"
             f"Missing Age: {missing_age_count:,}\n"
             f"Missing Gender: {missing_gender_count:,}\n"
             f"Completeness: {completeness:.1f}%"
@@ -1194,7 +1250,7 @@ class VoterCounterApp:
 
         self.root.after(0, lambda: self.progress.config(value=100))
         self.root.after(0, lambda e=elapsed_str, ep=str(excel_path), tc=total_cards_final:
-                        self.batch_complete(e, ep, tc, total_pdfs, missing_age_count, missing_gender_count))
+                        self.batch_complete(e, ep, tc, total_pdfs, missing_name_count, missing_age_count, missing_gender_count))
 
     def on_stopped(self):
         self.phase_var.set("Stopped - Progress Saved")
@@ -1204,7 +1260,7 @@ class VoterCounterApp:
         self.status_var.set("Stopped. Progress saved.")
         messagebox.showinfo("Stopped", "Progress saved. Resume by selecting same folder.")
 
-    def batch_complete(self, elapsed_str, excel_path, total_cards, total_pdfs, missing_age, missing_gender):
+    def batch_complete(self, elapsed_str, excel_path, total_cards, total_pdfs, missing_name, missing_age, missing_gender):
         self.phase_var.set("Complete!")
         self.detail_var.set(f"Processed {total_cards:,} cards from {total_pdfs} PDFs")
         self.time_var.set(elapsed_str)
@@ -1215,6 +1271,7 @@ class VoterCounterApp:
         messagebox.showinfo("Extraction Complete",
             f"Processed {total_pdfs} PDFs!\n\n"
             f"Total cards: {total_cards:,}\n"
+            f"Missing Name: {missing_name:,}\n"
             f"Missing Age: {missing_age:,}\n"
             f"Missing Gender: {missing_gender:,}\n"
             f"Time: {elapsed_str}\n\n"

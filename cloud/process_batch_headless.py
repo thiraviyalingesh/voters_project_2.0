@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Voter Analytics - Headless Batch Processor v8.2 (Ubuntu VM Optimized)
+Voter Analytics - Headless Batch Processor v8.3 (Ubuntu VM Optimized)
 Based on v4.0 Windows version with Linux multiprocessing fixes.
+v8.3: Added Name to Phase 3 enhanced OCR (now fixes Name/Age/Gender)
 v8.2: Fixed semaphore leak + checkpoint saves every 50 cards in Phase 3
 
 Features:
 - Phase 1: PDF extraction
 - Phase 2: OCR processing
-- Phase 3: Enhanced OCR for missing Age/Gender
+- Phase 3: Enhanced OCR for missing Name/Age/Gender
 - Phase 4: Excel generation with full formatting
 - Ntfy push notifications
 - Checkpoint/resume capability
@@ -203,12 +204,15 @@ def ocr_single_card(args):
         return global_idx, str(global_idx), None, pdf_name
 
 
-def enhanced_ocr_age_gender(args):
-    """Worker function for enhanced OCR focused on Age and Gender only."""
-    jpg_path, global_idx = args
+def enhanced_ocr_name_age_gender(args):
+    """Worker function for enhanced OCR focused on Name, Age and Gender."""
+    jpg_path, global_idx, need_name, need_age, need_gender = args
     try:
         img = Image.open(str(jpg_path))
         width, height = img.size
+
+        # Crop regions: top for name, bottom for age/gender
+        top_crop = img.crop((0, 0, width, int(height * 0.45)))
         bottom_crop = img.crop((0, int(height * 0.65), width, height))
 
         approaches = [
@@ -219,54 +223,101 @@ def enhanced_ocr_age_gender(args):
             ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
         ]
 
-        result = {'age': '', 'gender': ''}
+        result = {'name': '', 'age': '', 'gender': ''}
         custom_config = r'-c omp_thread_limit=1'
 
-        # Try bottom crop first
-        for name, transform in approaches:
-            try:
-                processed_img = transform(bottom_crop)
-                text = pytesseract.image_to_string(processed_img, lang='tam+eng', config=custom_config)
+        # Try top crop for Name
+        if need_name:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(top_crop)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng', config=custom_config)
 
-                if not result['age']:
-                    age_match = re.search(r'வயது\s*:\s*(\d+)', text)
-                    if age_match:
-                        result['age'] = age_match.group(1)
+                    if not result['name']:
+                        # Look for name pattern: பெயர் : <name>
+                        for line in text.split('\n'):
+                            if 'பெயர்' in line and ':' in line and 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line:
+                                name_part = line.split(':', 1)[-1].strip()
+                                # Clean OCR artifacts
+                                name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                if name_part and len(name_part) > 1:
+                                    result['name'] = name_part
+                                    break
 
-                if not result['gender']:
-                    if 'பாலினம்' in text:
-                        if 'ஆண்' in text:
-                            result['gender'] = 'Male'
-                        elif 'பெண்' in text:
-                            result['gender'] = 'Female'
-                        elif 'திருநங்கை' in text or 'மூன்றாம்' in text:
-                            result['gender'] = 'Third Gender'
+                    if result['name']:
+                        break
+                except:
+                    continue
 
-                if result['age'] and result['gender']:
-                    break
-            except:
-                continue
+        # Try bottom crop for Age/Gender
+        if need_age or need_gender:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(bottom_crop)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng', config=custom_config)
 
-        # Try full image if still missing
-        if not result['age'] or not result['gender']:
+                    if need_age and not result['age']:
+                        age_match = re.search(r'வயது\s*:\s*(\d+)', text)
+                        if age_match:
+                            result['age'] = age_match.group(1)
+
+                    if need_gender and not result['gender']:
+                        if 'பாலினம்' in text:
+                            if 'ஆண்' in text:
+                                result['gender'] = 'Male'
+                            elif 'பெண்' in text:
+                                result['gender'] = 'Female'
+                            elif 'திருநங்கை' in text or 'மூன்றாம்' in text:
+                                result['gender'] = 'Third Gender'
+
+                    if (not need_age or result['age']) and (not need_gender or result['gender']):
+                        break
+                except:
+                    continue
+
+        # Try full image if still missing anything
+        still_need_name = need_name and not result['name']
+        still_need_age = need_age and not result['age']
+        still_need_gender = need_gender and not result['gender']
+
+        if still_need_name or still_need_age or still_need_gender:
             for name, transform in approaches:
                 try:
                     processed_img = transform(img)
                     text = pytesseract.image_to_string(processed_img, lang='tam+eng', config=custom_config)
 
-                    if not result['age']:
+                    if still_need_name and not result['name']:
+                        for line in text.split('\n'):
+                            if 'பெயர்' in line and ':' in line and 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line:
+                                name_part = line.split(':', 1)[-1].strip()
+                                name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                if name_part and len(name_part) > 1:
+                                    result['name'] = name_part
+                                    break
+
+                    if still_need_age and not result['age']:
                         age_match = re.search(r'வயது\s*:\s*(\d+)', text)
                         if age_match:
                             result['age'] = age_match.group(1)
 
-                    if not result['gender']:
+                    if still_need_gender and not result['gender']:
                         if 'பாலினம்' in text:
                             if 'ஆண்' in text:
                                 result['gender'] = 'Male'
                             elif 'பெண்' in text:
                                 result['gender'] = 'Female'
 
-                    if result['age'] and result['gender']:
+                    # Check if we got everything we needed
+                    got_name = not need_name or result['name']
+                    got_age = not need_age or result['age']
+                    got_gender = not need_gender or result['gender']
+                    if got_name and got_age and got_gender:
                         break
                 except:
                     continue
@@ -510,9 +561,9 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         all_cards = checkpoint.data.get('all_cards', [])
         ocr_results = {int(k): tuple(v) for k, v in checkpoint.data.get('ocr_results', {}).items()}
 
-    # ===== PHASE 3: Enhanced OCR for missing Age/Gender =====
+    # ===== PHASE 3: Enhanced OCR for missing Name/Age/Gender =====
     if current_phase < 3:
-        log("Phase 3/4: Fixing missing Age/Gender...")
+        log("Phase 3/4: Fixing missing Name/Age/Gender...")
         enhanced_done = set(checkpoint.data.get('enhanced_ocr_done', []))
 
         cards_to_fix = []
@@ -520,10 +571,13 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             if global_idx in enhanced_done:
                 continue
             if data:
-                if not data.get('age') or not data.get('gender'):
+                need_name = not data.get('name')
+                need_age = not data.get('age')
+                need_gender = not data.get('gender')
+                if need_name or need_age or need_gender:
                     if global_idx < len(all_cards):
                         jpg_path = all_cards[global_idx][0]
-                        cards_to_fix.append((jpg_path, global_idx))
+                        cards_to_fix.append((jpg_path, global_idx, need_name, need_age, need_gender))
 
         if cards_to_fix:
             log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
@@ -531,7 +585,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
             ctx = multiprocessing.get_context('spawn')
 
             with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
-                futures = {executor.submit(enhanced_ocr_age_gender, card): card[1] for card in cards_to_fix}
+                futures = {executor.submit(enhanced_ocr_name_age_gender, card): card[1] for card in cards_to_fix}
 
                 for future in as_completed(futures):
                     try:
@@ -541,6 +595,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                         if enhanced_data and global_idx in ocr_results:
                             s_no, old_data, pdf_name = ocr_results[global_idx]
                             if old_data:
+                                if not old_data.get('name') and enhanced_data.get('name'):
+                                    old_data['name'] = enhanced_data['name']
                                 if not old_data.get('age') and enhanced_data.get('age'):
                                     old_data['age'] = enhanced_data['age']
                                 if not old_data.get('gender') and enhanced_data.get('gender'):
@@ -584,6 +640,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         cell.alignment = Alignment(horizontal='center')
 
     row_num = 2
+    missing_name_count = 0
     missing_age_count = 0
     missing_gender_count = 0
 
@@ -594,7 +651,13 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
         if data:
             ws.cell(row=row_num, column=3, value=data.get('voter_id', ''))
-            ws.cell(row=row_num, column=4, value=data.get('name', ''))
+
+            name_val = data.get('name', '')
+            name_cell = ws.cell(row=row_num, column=4, value=name_val)
+            if not name_val:
+                name_cell.fill = yellow_fill
+                missing_name_count += 1
+
             ws.cell(row=row_num, column=5, value=data.get('relation_type', ''))
             ws.cell(row=row_num, column=6, value=data.get('relation_name', ''))
             ws.cell(row=row_num, column=7, value=data.get('house_no', ''))
@@ -614,8 +677,9 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         else:
             for col in range(3, 10):
                 cell = ws.cell(row=row_num, column=col, value='')
-                if col in [8, 9]:
+                if col in [4, 8, 9]:  # Name, Age, Gender columns
                     cell.fill = yellow_fill
+            missing_name_count += 1
             missing_age_count += 1
             missing_gender_count += 1
 
@@ -636,10 +700,12 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
     total_cards = len(ocr_results)
     elapsed_total = get_elapsed()
-    completeness = ((total_cards - max(missing_age_count, missing_gender_count)) / total_cards * 100) if total_cards > 0 else 0
+    max_missing = max(missing_name_count, missing_age_count, missing_gender_count)
+    completeness = ((total_cards - max_missing) / total_cards * 100) if total_cards > 0 else 0
 
     log(f"  Excel saved: {excel_path}")
     log(f"  Total cards: {total_cards:,}")
+    log(f"  Missing Name: {missing_name_count:,}")
     log(f"  Missing Age: {missing_age_count:,}")
     log(f"  Missing Gender: {missing_gender_count:,}")
     log(f"  Completeness: {completeness:.1f}%")
@@ -660,7 +726,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
     send_notification(
         "Processing Complete!",
         f"Constituency: {constituency_name}\nTotal: {total_cards:,}\n"
-        f"Missing Age: {missing_age_count:,}\nMissing Gender: {missing_gender_count:,}\n"
+        f"Missing Name: {missing_name_count:,}\nMissing Age: {missing_age_count:,}\nMissing Gender: {missing_gender_count:,}\n"
         f"Completeness: {completeness:.1f}%\nTime: {format_time(elapsed_total)}"
     )
 
@@ -671,7 +737,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.2')
+    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.3')
     parser.add_argument('folder', help='Path to constituency folder containing PDFs')
     parser.add_argument('--ntfy-topic', help='Ntfy topic for notifications')
     parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of workers (default: {NUM_WORKERS})')
@@ -679,7 +745,7 @@ def main():
 
     args = parser.parse_args()
 
-    log(f"Voter Analytics Headless Processor v8.2")
+    log(f"Voter Analytics Headless Processor v8.3")
     log(f"Using spawn context with OMP_THREAD_LIMIT=1")
     log(f"Workers: {args.workers}")
 
