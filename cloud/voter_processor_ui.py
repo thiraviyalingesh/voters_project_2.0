@@ -27,7 +27,7 @@ import requests
 # ============== CONFIGURATION ==============
 # Edit these settings as needed
 NTFY_TOPIC = "vinayak-voter-alerts"  # Your Ntfy topic
-BASE_DIR = Path.home() / "voter_analytics"
+BASE_DIR = Path.home() / "voter_analytics_2.0"
 UPLOAD_DIR = BASE_DIR / "uploads"
 OUTPUT_DIR = UPLOAD_DIR / "output"  # Same as processor output
 PROCESSING_DIR = BASE_DIR / "processing"
