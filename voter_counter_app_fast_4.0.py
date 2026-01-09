@@ -1,9 +1,12 @@
 """
-Electoral Roll Voter Counter - GUI Application v4.1 (FAST VERSION)
+Electoral Roll Voter Counter - GUI Application v4.2 (FAST VERSION)
 Extracts voter counts from Tamil Nadu Electoral Roll PDFs
 Optimized with parallel processing for faster OCR
 Supports batch processing of entire constituency folders
 Features checkpoint/resume capability for interrupted sessions
+
+v4.2 Features:
+- Reduced console logging for cleaner output
 
 v4.1 Features:
 - Enhanced OCR now fixes Name, Age & Gender (was Age & Gender only)
@@ -107,8 +110,7 @@ def ocr_single_card(args):
         else:
             stem = Path(jpg_path).stem
         return global_idx, stem, data, pdf_name
-    except Exception as e:
-        print(f"OCR error for {jpg_path}: {e}")
+    except Exception:
         if hasattr(jpg_path, 'stem'):
             stem = jpg_path.stem
         else:
@@ -239,8 +241,7 @@ def enhanced_ocr_name_age_gender(args):
                     continue
 
         return global_idx, result
-    except Exception as e:
-        print(f"Enhanced OCR error for {jpg_path}: {e}")
+    except Exception:
         return global_idx, None
 
 
@@ -289,8 +290,7 @@ def enhanced_ocr_single_card(args):
                 continue
 
         return global_idx, merged
-    except Exception as e:
-        print(f"Enhanced OCR error for {jpg_path}: {e}")
+    except Exception:
         return global_idx, None
 
 
@@ -499,8 +499,7 @@ def extract_cards_from_single_pdf(args):
 
         doc.close()
         return pdf_index, pdf_name, card_count, str(output_path)
-    except Exception as e:
-        print(f"Error extracting from {pdf_path}: {e}")
+    except Exception:
         return pdf_index, Path(pdf_path).stem, 0, None
 
 
@@ -528,21 +527,10 @@ class CheckpointManager:
     def load(self):
         if self.exists():
             try:
-                # Get file size to estimate load time
-                file_size = self.checkpoint_path.stat().st_size
-                size_mb = file_size / (1024 * 1024)
-                print(f"Loading checkpoint ({size_mb:.1f} MB)...")
-
                 with open(self.checkpoint_path, 'r', encoding='utf-8') as f:
                     self.data = json.load(f)
-
-                cards_count = len(self.data.get('all_cards', []))
-                ocr_count = len(self.data.get('ocr_results', {}))
-                print(f"Loaded checkpoint: Phase {self.data['phase']}, {cards_count:,} cards, {ocr_count:,} OCR results")
                 return True
-            except json.JSONDecodeError as e:
-                print(f"Checkpoint file corrupted: {e}")
-                print("Deleting corrupted checkpoint and starting fresh...")
+            except json.JSONDecodeError:
                 self.delete()
                 return False
         return False
@@ -555,16 +543,13 @@ class CheckpointManager:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
             # Replace old checkpoint with new one
             temp_path.replace(self.checkpoint_path)
-            print(f"Checkpoint saved: Phase {self.data['phase']}")
-        except Exception as e:
-            print(f"Error saving checkpoint: {e}")
+        except Exception:
             if temp_path.exists():
                 temp_path.unlink()
 
     def delete(self):
         if self.exists():
             self.checkpoint_path.unlink()
-            print("Checkpoint deleted")
 
     def update_phase(self, phase):
         self.data['phase'] = phase
@@ -594,13 +579,12 @@ class CheckpointManager:
 class VoterCounterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Electoral Roll Voter Counter v4.1 (FAST - Batch)")
+        self.root.title("Electoral Roll Voter Counter v4.2 (FAST - Batch)")
         self.root.geometry("850x800")
         self.root.resizable(True, True)
 
         # Use all available CPU cores
         self.num_workers = multiprocessing.cpu_count()
-        print(f"Using {self.num_workers} worker processes (all CPU cores)")
 
         self.checkpoint = None
         self.stop_requested = False
@@ -618,7 +602,7 @@ class VoterCounterApp:
 
         title_label = ttk.Label(
             main_frame,
-            text="Tamil Nadu Electoral Roll\nVoter Counter v4.1 (Batch Mode)",
+            text="Tamil Nadu Electoral Roll\nVoter Counter v4.2 (Batch Mode)",
             style='Title.TLabel',
             justify=tk.CENTER
         )
@@ -870,8 +854,7 @@ class VoterCounterApp:
                                 self.checkpoint.data['elapsed_before_resume'] = get_elapsed()
                                 self.checkpoint.save()
 
-                        except Exception as e:
-                            print(f"Error: {e}")
+                        except Exception:
                             completed_pdfs += 1
 
             if self.stop_requested:
@@ -934,8 +917,8 @@ class VoterCounterApp:
                             for jpg_file in jpg_files:
                                 all_cards.append((jpg_file, global_idx, pdf_name))
                                 global_idx += 1
-                        except Exception as e:
-                            print(f"Error scanning {output_path}: {e}")
+                        except Exception:
+                            pass
 
                     scanned_dirs += 1
                     if scanned_dirs % 20 == 0 or scanned_dirs == total_dirs:
@@ -952,19 +935,15 @@ class VoterCounterApp:
 
             # Load OCR results with progress feedback
             self.root.after(0, lambda: self.detail_var.set("Loading previous OCR results..."))
-            print("Loading OCR results from checkpoint...")
 
             # Faster: use pre-built set from checkpoint data directly
             ocr_data = self.checkpoint.data.get('ocr_results', {})
             completed_indices = set(int(k) for k in ocr_data.keys())
-            print(f"Loaded {len(completed_indices):,} completed OCR results")
 
             self.root.after(0, lambda c=len(completed_indices): self.detail_var.set(f"Building work queue ({c:,} already done)..."))
-            print("Building cards to OCR list...")
 
             # Build list of cards that still need OCR (keep as strings - PIL accepts string paths)
             cards_to_ocr = [(p, idx, name) for p, idx, name in all_cards if idx not in completed_indices]
-            print(f"Cards to OCR: {len(cards_to_ocr):,}")
 
             # Build ocr_results dict only for cards we need to update
             ocr_results = {int(k): (v[0], v[1], v[2]) for k, v in ocr_data.items()}
@@ -973,7 +952,6 @@ class VoterCounterApp:
 
             if cards_to_ocr:
                 # Parallel OCR processing - submit in batches to avoid memory issues
-                print(f"Starting OCR with {self.num_workers} workers...")
                 self.root.after(0, lambda: self.detail_var.set("Starting OCR workers..."))
 
                 batch_size = 500  # Submit 100 tasks at a time
@@ -1034,8 +1012,7 @@ class VoterCounterApp:
                                     self.checkpoint.data['elapsed_before_resume'] = get_elapsed()
                                     self.checkpoint.save()
 
-                            except Exception as e:
-                                print(f"OCR Error: {e}")
+                            except Exception:
                                 completed_ocr += 1
 
                             # Remove completed future and add new one
@@ -1122,8 +1099,7 @@ class VoterCounterApp:
                                 self.checkpoint.data['elapsed_before_resume'] = get_elapsed()
                                 self.checkpoint.save()
 
-                        except Exception as e:
-                            print(f"Enhanced OCR Error: {e}")
+                        except Exception:
                             fixed_count += 1
 
                 if self.stop_requested:
