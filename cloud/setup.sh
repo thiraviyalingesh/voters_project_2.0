@@ -15,7 +15,7 @@ set -e  # Exit on error
 
 # ============== CONFIGURATION ==============
 # Change this to use a different port
-STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
+STREAMLIT_PORT="${STREAMLIT_PORT:-8053}"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -97,24 +97,24 @@ echo ""
 echo "Step 3/7: Setting up project directory..."
 
 # Default repo URL
-DEFAULT_REPO="https://github.com/vinayaklearnsML2022/voters_project.git"
+DEFAULT_REPO="https://github.com/thiraviyalingesh/voters_project_2.0.git"
 REPO_URL="${CUSTOM_REPO:-$DEFAULT_REPO}"
 
 echo "Cloning from: $REPO_URL"
-if [ -d ~/voter_analytics ]; then
+if [ -d ~/voter_analytics_2.0 ]; then
     print_warning "Directory exists. Pulling latest..."
-    cd ~/voter_analytics && git pull origin main || true
+    cd ~/voter_analytics_2.0 && git pull origin main || true
 else
-    git clone "$REPO_URL" ~/voter_analytics
+    git clone "$REPO_URL" ~/voter_analytics_2.0
 fi
 
 # Create required directories
-mkdir -p ~/voter_analytics/uploads
-mkdir -p ~/voter_analytics/uploads/output
-mkdir -p ~/voter_analytics/processing
-mkdir -p ~/voter_analytics/output
-mkdir -p ~/voter_analytics/logs
-cd ~/voter_analytics
+mkdir -p ~/voter_analytics_2.0/uploads
+mkdir -p ~/voter_analytics_2.0/uploads/output
+mkdir -p ~/voter_analytics_2.0/processing
+mkdir -p ~/voter_analytics_2.0/output
+mkdir -p ~/voter_analytics_2.0/logs
+cd ~/voter_analytics_2.0
 print_status "Project directories created"
 
 # Step 4: Create virtual environment
@@ -147,7 +147,7 @@ echo "Step 6/7: Setting up auto-start service..."
 CURRENT_USER=$(whoami)
 HOME_DIR=$(eval echo ~$CURRENT_USER)
 
-sudo tee /etc/systemd/system/voter-analytics.service > /dev/null << EOF
+sudo tee /etc/systemd/system/voter-analytics-2-2.service > /dev/null << EOF
 [Unit]
 Description=Voter Analytics Web UI
 After=network.target
@@ -186,14 +186,14 @@ echo "=============================================="
 echo ""
 echo "Quick Start (if files already exist):"
 echo ""
-echo "  cd ~/voter_analytics"
+echo "  cd ~/voter_analytics_2.0"
 echo "  source venv/bin/activate"
 echo "  streamlit run cloud/voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0"
 echo ""
 echo "OR use systemd service:"
 echo ""
-echo "  sudo systemctl start voter-analytics"
-echo "  sudo systemctl enable voter-analytics"
+echo "  sudo systemctl start voter-analytics-2"
+echo "  sudo systemctl enable voter-analytics-2"
 echo ""
 echo "Access Web UI at: http://YOUR_VM_IP:$STREAMLIT_PORT"
 echo ""
@@ -204,7 +204,7 @@ echo "    --allow tcp:$STREAMLIT_PORT --direction INGRESS"
 echo ""
 echo "----------------------------------------------"
 echo "To update code later:"
-echo "  cd ~/voter_analytics && git pull origin main"
+echo "  cd ~/voter_analytics_2.0 && git pull origin main"
 echo ""
 echo "=============================================="
 echo ""
