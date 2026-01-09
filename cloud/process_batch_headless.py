@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Voter Analytics - Headless Batch Processor v8.3 (Ubuntu VM Optimized)
+Voter Analytics - Headless Batch Processor v8.5 (Ubuntu VM Optimized)
 Based on v4.0 Windows version with Linux multiprocessing fixes.
+v8.5: Minimal logging (phase start/complete only) + stopped count on interrupt
+v8.4: Reduced logging frequency for better performance (1 lakh+ PDFs)
 v8.3: Added Name to Phase 3 enhanced OCR (now fixes Name/Age/Gender)
-v8.2: Fixed semaphore leak + checkpoint saves every 50 cards in Phase 3
 
 Features:
 - Phase 1: PDF extraction
@@ -24,6 +25,7 @@ os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 import re
 import sys
+import signal
 import argparse
 from pathlib import Path
 import time
@@ -32,6 +34,9 @@ import requests
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import gc
+
+# Global state for interrupt handling
+_interrupt_state = {'phase': 0, 'progress': '', 'interrupted': False}
 
 # Import image processing libraries
 import fitz  # PyMuPDF
@@ -64,6 +69,26 @@ def log(message):
     """Print log message with timestamp."""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", flush=True)
+
+
+def handle_interrupt(signum, frame):
+    """Handle interrupt signal and log progress."""
+    global _interrupt_state
+    if _interrupt_state['interrupted']:
+        sys.exit(1)  # Force exit on second interrupt
+    _interrupt_state['interrupted'] = True
+
+    if _interrupt_state['progress']:
+        log(f"Stopped: {_interrupt_state['progress']}")
+    else:
+        log("Stopped")
+
+    sys.exit(1)
+
+
+# Register signal handlers
+signal.signal(signal.SIGINT, handle_interrupt)
+signal.signal(signal.SIGTERM, handle_interrupt)
 
 
 def format_time(seconds):
@@ -479,19 +504,24 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
     # ===== PHASE 1: Extract cards from PDFs =====
     if current_phase < 1:
         log("Phase 1/4: Extracting cards from PDFs...")
+        _interrupt_state['phase'] = 1
         completed_pdfs = 0
         total_cards = 0
 
         for idx, pdf in enumerate(pdf_files):
             if pdf.stem in pdf_card_info:
+                completed_pdfs += 1
                 continue
             pdf_idx, pdf_name, card_count, output_path = extract_cards_from_pdf_sequential(str(pdf), str(image_dir), idx)
             pdf_card_info[pdf_name] = (card_count, output_path)
             completed_pdfs += 1
             total_cards += card_count
-            log(f"  Extracted: {completed_pdfs}/{total_pdfs} PDFs ({total_cards:,} cards) [{format_time(get_elapsed())}]")
             checkpoint.data['extracted_pdfs'] = pdf_card_info
-            checkpoint.save()
+            _interrupt_state['progress'] = f"Phase 1 - Extracted {completed_pdfs}/{total_pdfs} PDFs"
+            if completed_pdfs % 10 == 0:
+                checkpoint.save()
+
+        checkpoint.save()
 
         # Build card list
         all_cards = []
@@ -511,24 +541,23 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
         checkpoint.data['phase'] = 1
         checkpoint.save()
         current_phase = 1
-        log(f"  Phase 1 complete: {len(all_cards):,} cards extracted")
+        log(f"Phase 1 complete: {len(all_cards):,} cards from {total_pdfs} PDFs")
 
     # ===== PHASE 2: OCR all cards =====
     if current_phase < 2:
         log("Phase 2/4: OCR processing all cards...")
+        _interrupt_state['phase'] = 2
         all_cards = checkpoint.data.get('all_cards', [])
         total_cards_to_ocr = len(all_cards)
 
         ocr_data = checkpoint.data.get('ocr_results', {})
         completed_indices = set(int(k) for k in ocr_data.keys())
-        log(f"  Already completed: {len(completed_indices):,} cards")
 
         cards_to_ocr = [(p, idx, name) for p, idx, name in all_cards if idx not in completed_indices]
         ocr_results = {int(k): tuple(v) for k, v in ocr_data.items()}
         completed_ocr = len(completed_indices)
 
         if cards_to_ocr:
-            log(f"  OCR remaining: {len(cards_to_ocr):,} cards")
             ctx = multiprocessing.get_context('spawn')
 
             with ProcessPoolExecutor(max_workers=num_workers, mp_context=ctx) as executor:
@@ -540,23 +569,19 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                         ocr_results[global_idx] = (s_no, data, pdf_name)
                         checkpoint.data['ocr_results'][str(global_idx)] = (s_no, data, pdf_name)
                         completed_ocr += 1
-
-                        if completed_ocr % 100 == 0 or completed_ocr == total_cards_to_ocr:
-                            rate = (completed_ocr - len(completed_indices)) / max(1, get_elapsed() - elapsed_before)
-                            remaining = (total_cards_to_ocr - completed_ocr) / max(1, rate) if rate > 0 else 0
-                            log(f"  OCR: {completed_ocr:,}/{total_cards_to_ocr:,} [{format_time(get_elapsed())}, ~{format_time(remaining)} left]")
+                        _interrupt_state['progress'] = f"Phase 2 - OCR'd {completed_ocr}/{total_cards_to_ocr} cards"
 
                         if completed_ocr % 500 == 0:
                             checkpoint.data['elapsed_before_resume'] = get_elapsed()
                             checkpoint.save()
                     except Exception as e:
-                        log(f"  OCR error: {e}")
+                        pass
 
         checkpoint.data['phase'] = 2
         checkpoint.save()
         current_phase = 2
-        gc.collect()  # Clean up multiprocessing resources
-        log(f"  Phase 2 complete: {len(ocr_results):,} cards OCR'd")
+        gc.collect()
+        log(f"Phase 2 complete: {len(ocr_results):,} cards OCR'd")
     else:
         all_cards = checkpoint.data.get('all_cards', [])
         ocr_results = {int(k): tuple(v) for k, v in checkpoint.data.get('ocr_results', {}).items()}
@@ -564,6 +589,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
     # ===== PHASE 3: Enhanced OCR for missing Name/Age/Gender =====
     if current_phase < 3:
         log("Phase 3/4: Fixing missing Name/Age/Gender...")
+        _interrupt_state['phase'] = 3
         enhanced_done = set(checkpoint.data.get('enhanced_ocr_done', []))
 
         cards_to_fix = []
@@ -579,8 +605,8 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                         jpg_path = all_cards[global_idx][0]
                         cards_to_fix.append((jpg_path, global_idx, need_name, need_age, need_gender))
 
+        total_to_fix = len(cards_to_fix)
         if cards_to_fix:
-            log(f"  Fixing {len(cards_to_fix):,} cards with missing data...")
             fixed_count = 0
             ctx = multiprocessing.get_context('spawn')
 
@@ -605,24 +631,25 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
                                 checkpoint.data['ocr_results'][str(global_idx)] = (s_no, old_data, pdf_name)
 
                         fixed_count += 1
-                        if fixed_count % 50 == 0 or fixed_count == len(cards_to_fix):
-                            log(f"  Fixed: {fixed_count}/{len(cards_to_fix)}")
-                            checkpoint.save()  # Save progress every 50 cards
+                        _interrupt_state['progress'] = f"Phase 3 - Fixed {fixed_count}/{total_to_fix} cards"
+                        if fixed_count % 200 == 0:
+                            checkpoint.save()
                     except Exception as e:
-                        log(f"  Enhanced OCR error: {e}")
                         fixed_count += 1
 
             checkpoint.save()
-            gc.collect()  # Clean up multiprocessing resources
+            gc.collect()
+            log(f"Phase 3 complete: Fixed {fixed_count:,}/{total_to_fix:,} cards")
         else:
-            log("  No cards need fixing")
+            log("Phase 3 complete: No cards need fixing")
 
         checkpoint.data['phase'] = 3
         checkpoint.save()
-        log("  Phase 3 complete")
 
     # ===== PHASE 4: Create Excel =====
     log("Phase 4/4: Creating Excel file...")
+    _interrupt_state['phase'] = 4
+    _interrupt_state['progress'] = "Phase 4 - Creating Excel file"
     ocr_results = {int(k): tuple(v) for k, v in checkpoint.data.get('ocr_results', {}).items()}
 
     wb = Workbook()
@@ -737,7 +764,7 @@ def process_constituency(folder_path, ntfy_topic=None, num_workers=None, cleanup
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.3')
+    parser = argparse.ArgumentParser(description='Voter Analytics - Headless Batch Processor v8.5')
     parser.add_argument('folder', help='Path to constituency folder containing PDFs')
     parser.add_argument('--ntfy-topic', help='Ntfy topic for notifications')
     parser.add_argument('--workers', type=int, default=NUM_WORKERS, help=f'Number of workers (default: {NUM_WORKERS})')
@@ -745,8 +772,7 @@ def main():
 
     args = parser.parse_args()
 
-    log(f"Voter Analytics Headless Processor v8.3")
-    log(f"Using spawn context with OMP_THREAD_LIMIT=1")
+    log(f"Voter Analytics Headless Processor v8.5")
     log(f"Workers: {args.workers}")
 
     success = process_constituency(

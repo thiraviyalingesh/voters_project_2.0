@@ -15,7 +15,7 @@ set -e  # Exit on error
 
 # ============== CONFIGURATION ==============
 # Change this to use a different port
-STREAMLIT_PORT="${STREAMLIT_PORT:-8053}"
+STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

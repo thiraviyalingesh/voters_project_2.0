@@ -22,7 +22,7 @@ gcloud compute ssh YOUR_INSTANCE_NAME --zone=YOUR_ZONE
 
 ### 3. Start Streamlit
 ```bash
-cd ~/voter_analytics_2.0 && source venv/bin/activate && nohup streamlit run cloud/voter_processor_ui.py --server.port 8053 --server.address 0.0.0.0 > ~/streamlit_2.0.log 2>&1 &
+cd ~/voter_analytics_2.0 && source venv/bin/activate && nohup streamlit run cloud/voter_processor_ui.py --server.port 8501 --server.address 0.0.0.0 > ~/streamlit_2.0.log 2>&1 &
 ```
 
 ### 4. Verify Running
@@ -32,7 +32,7 @@ ps aux | grep streamlit
 
 ### 5. Access Web UI
 ```
-http://<VM_EXTERNAL_IP>:8053
+http://<VM_EXTERNAL_IP>:8501
 ```
 
 ---
@@ -65,4 +65,4 @@ echo '{"processing": false, "current_constituency": null, "pid": null, "queue": 
 - Your data, uploads, and code are preserved when VM stops
 - Only running processes stop
 - Processing can resume from checkpoints if interrupted
-- Port: 8053 (different from boss's 8052)
+- Port: 8501
