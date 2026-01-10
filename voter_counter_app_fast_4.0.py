@@ -1,9 +1,13 @@
 """
-Electoral Roll Voter Counter - GUI Application v4.2 (FAST VERSION)
+Electoral Roll Voter Counter - GUI Application v4.3 (FAST VERSION)
 Extracts voter counts from Tamil Nadu Electoral Roll PDFs
 Optimized with parallel processing for faster OCR
 Supports batch processing of entire constituency folders
 Features checkpoint/resume capability for interrupted sessions
+
+v4.3 Features:
+- Phase 2 OCR uses tam+eng (was tam only) - fixes number/symbol recognition
+- House number extraction takes first word only (removes garbage)
 
 v4.2 Features:
 - Reduced console logging for cleaner output
@@ -102,7 +106,7 @@ def ocr_single_card(args):
     jpg_path, global_idx, pdf_name = args
     try:
         img = Image.open(jpg_path)
-        text = pytesseract.image_to_string(img, lang='tam')
+        text = pytesseract.image_to_string(img, lang='tam+eng')
         data = parse_voter_card_standalone(text)
         # Handle both Path objects and strings
         if hasattr(jpg_path, 'stem'):
@@ -390,8 +394,9 @@ def parse_voter_card_standalone(text):
 
         # Extract house number
         if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
-            house_part = line.split(':', 1)[-1]
-            house_part = clean_ocr_text_standalone(house_part)
+            house_part = line.split(':', 1)[-1].strip()
+            house_part = house_part.split()[0] if house_part else ''  # First word only
+            house_part = house_part.rstrip('.,;:')  # Remove trailing punctuation
             if house_part and not data['house_no']:
                 data['house_no'] = house_part
 
@@ -579,7 +584,7 @@ class CheckpointManager:
 class VoterCounterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Electoral Roll Voter Counter v4.2 (FAST - Batch)")
+        self.root.title("Electoral Roll Voter Counter v4.3 (FAST - Batch)")
         self.root.geometry("850x800")
         self.root.resizable(True, True)
 
@@ -602,7 +607,7 @@ class VoterCounterApp:
 
         title_label = ttk.Label(
             main_frame,
-            text="Tamil Nadu Electoral Roll\nVoter Counter v4.2 (Batch Mode)",
+            text="Tamil Nadu Electoral Roll\nVoter Counter v4.3 (Batch Mode)",
             style='Title.TLabel',
             justify=tk.CENTER
         )
