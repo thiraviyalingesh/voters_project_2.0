@@ -1,0 +1,134 @@
+{
+  "total_cards": 3367,
+  "missing_house_no_count": 16,
+  "failing_cards": [
+    {
+      "global_idx": 214,
+      "s_no": "215",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI\\215.png",
+      "extracted_house_no": "",
+      "name": "சஞ்சய்‌ ones பிஸ்‌"
+    },
+    {
+      "global_idx": 361,
+      "s_no": "362",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI\\362.png",
+      "extracted_house_no": "",
+      "name": "அம்ரீன்‌ ஜஹான்‌ ரி"
+    },
+    {
+      "global_idx": 488,
+      "s_no": "489",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-2-WI\\489.png",
+      "extracted_house_no": "",
+      "name": "சதீஷ்குமார்‌"
+    },
+    {
+      "global_idx": 628,
+      "s_no": "15",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI\\15.png",
+      "extracted_house_no": "",
+      "name": "விஜய"
+    },
+    {
+      "global_idx": 1274,
+      "s_no": "661",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI\\661.png",
+      "extracted_house_no": "",
+      "name": "கோபிநாத்‌"
+    },
+    {
+      "global_idx": 1391,
+      "s_no": "778",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-1-WI\\778.png",
+      "extracted_house_no": "",
+      "name": "ஸுதீஷ்‌ஸிவிஸ்‌"
+    },
+    {
+      "global_idx": 1516,
+      "s_no": "80",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI\\80.png",
+      "extracted_house_no": "",
+      "name": "அ சலினா"
+    },
+    {
+      "global_idx": 1518,
+      "s_no": "82",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI\\82.png",
+      "extracted_house_no": "",
+      "name": "ஜான்‌பால்‌"
+    },
+    {
+      "global_idx": 2017,
+      "s_no": "581",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-5-WI\\581.png",
+      "extracted_house_no": "",
+      "name": "ஹேமநாத"
+    },
+    {
+      "global_idx": 2855,
+      "s_no": "200",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\200.png",
+      "extracted_house_no": "",
+      "name": "க விஸ்வ ராகவ்‌"
+    },
+    {
+      "global_idx": 2853,
+      "s_no": "198",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\198.png",
+      "extracted_house_no": "",
+      "name": "சோ கருப்பையா"
+    },
+    {
+      "global_idx": 2877,
+      "s_no": "222",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\222.png",
+      "extracted_house_no": "",
+      "name": "ஸிரலி நாய"
+    },
+    {
+      "global_idx": 2891,
+      "s_no": "236",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\236.png",
+      "extracted_house_no": "",
+      "name": "ஜேருஷா பாாமற்ட மார்கரெட்‌"
+    },
+    {
+      "global_idx": 3274,
+      "s_no": "619",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\619.png",
+      "extracted_house_no": "",
+      "name": "சாமுவேல்‌ வெற்றி செல்வன்‌"
+    },
+    {
+      "global_idx": 3365,
+      "s_no": "710",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\710.png",
+      "extracted_house_no": "",
+      "name": "பா சுவேதா"
+    },
+    {
+      "global_idx": 3359,
+      "s_no": "704",
+      "pdf_name": "2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI",
+      "card_path": "D:\\voter_prj_14_jan_2026\\voters_project_2.0\\.13-kolathur_test_temp_cards\\2026-EROLLGEN-S22-13-SIR-DraftRoll-Revision1-TAM-3-WI\\704.png",
+      "extracted_house_no": "",
+      "name": "வெங்கட்‌ சாயி கார்த்திக்‌"
+    }
+  ]
+}

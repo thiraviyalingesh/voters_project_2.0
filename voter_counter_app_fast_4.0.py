@@ -1,9 +1,58 @@
 """
-Electoral Roll Voter Counter - GUI Application v4.6 (FAST VERSION)
+Electoral Roll Voter Counter - GUI Application v5.9 (FAST VERSION)
 Extracts voter counts from Tamil Nadu Electoral Roll PDFs
 Optimized with parallel processing for faster OCR
 Supports batch processing of entire constituency folders
 Features checkpoint/resume capability for interrupted sessions
+
+v5.9 Features:
+- Improved Age extraction (was 79 missing, targeting <10):
+  * 4 crop regions × 3 preprocessing = max 12 OCR calls for Age
+  * More flexible age patterns (7 patterns + 2 fallbacks)
+  * Better Tamil OCR hints detection
+- Name/Gender still use efficient 2×2 approach
+
+v5.8 Features:
+- BALANCED speed + accuracy:
+  * Name: 2 crop regions × 2 preprocessing = max 4 OCR calls (was 1, too aggressive)
+  * Age+Gender: COMBINED 2 crop regions × 2 preprocessing = max 4 OCR calls
+  * Total worst-case: ~12 OCR calls (balanced from ~40 original and ~4 v5.7)
+  * Pass 0 catches 99%+ of cards - extra OCR only for failing cards
+
+v5.7 Features:
+- Speed optimized (too aggressive, hurt accuracy)
+
+v5.6 Features:
+- Improved Gender extraction with flexible patterns
+
+v5.5 Features:
+- Improved Age extraction with flexible patterns and fallback
+
+v5.4 Features:
+- BUG FIX: width/height now defined early for all extractions
+- Three-pass extraction for ALL fields
+
+v5.3 Features:
+- Three-pass extraction (had bug with undefined width/height)
+
+v5.2 Features:
+- Phase 2 completion report with missing field counts
+- Failing cards saved to JSON log file
+
+v5.1 Features:
+- Three-pass house number extraction with fallbacks
+
+v5.0 Features:
+- Two-pass house number extraction
+
+v4.9 Features:
+- Partial Tamil matching + extract until 3 spaces
+
+v4.8 Features:
+- FAST Phase 2 house number extraction with English-only OCR
+
+v4.7 Features:
+- Phase 2 targeted crop OCR with 3 preprocessing approaches for House Number
 
 v4.6 Features:
 - Phase 2 targeted crop OCR only for House Number (main problem):
@@ -119,31 +168,383 @@ def ocr_single_card(args):
     jpg_path, global_idx, pdf_name = args
     try:
         img = Image.open(jpg_path)
+        width, height = img.size  # Get dimensions early for all extractions
         enhanced_img = ImageEnhance.Contrast(img).enhance(1.5)  # Improve OCR accuracy
         text = pytesseract.image_to_string(enhanced_img, lang='tam+eng')
         data = parse_voter_card_standalone(text)
 
-        # v4.6: If house number is empty or garbage (no digits), try targeted crop OCR
+        # v5.3: Three-pass extraction for all fields (House No, Name, Age, Gender)
+        # Pass 0: Re-parse initial OCR text with flexible patterns (no crop needed)
+        # Pass 1: Fast crop OCR (single crop, single preprocessing, Tamil match)
+        # Pass 2: Thorough crop OCR (multiple crops, multiple preprocessing, fallback patterns)
         house_no = data.get('house_no', '')
         if not house_no or not re.search(r'\d', str(house_no)):
-            # Crop middle region (40-70% of height) where house number is located
-            width, height = img.size
-            middle_crop = img.crop((0, int(height * 0.40), width, int(height * 0.70)))
-            middle_crop = ImageEnhance.Contrast(middle_crop).enhance(2.0)
-            try:
-                crop_text = pytesseract.image_to_string(middle_crop, lang='tam+eng')
-                for line in crop_text.split('\n'):
-                    if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
-                        house_part = line.split(':', 1)[-1].strip()
-                        house_part = house_part.split()[0] if house_part else ''
-                        house_part = house_part.rstrip('.,;:')
-                        if house_part and re.search(r'\d', house_part):
-                            data['house_no'] = house_part
-                            break
-            except:
-                pass
 
-        # Note: Name/Age/Gender crop OCR removed for speed - Phase 3 handles these
+            # ===== PASS 0: Re-parse initial OCR text with flexible patterns =====
+            # The initial OCR text might have the house number but parsing missed it
+            lines = text.split('\n')
+            for i, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Strategy 1: Flexible Tamil match with any separator
+                has_tamil_hint = ('வீட்டு' in line or 'ட்டு' in line or 'எண்' in line or
+                                  'எண' in line or 'வட்டு' in line or 'வீட்' in line or
+                                  'House' in line.lower() or 'no' in line.lower())
+                if has_tamil_hint:
+                    for sep in [':', ';', '-', '.', '~', '=']:
+                        if sep in line:
+                            after_sep = line.split(sep, 1)[-1]
+                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_sep.strip())
+                            if match:
+                                house_part = match.group(1).strip().rstrip('.,;:')
+                                if house_part and re.search(r'\d', house_part) and len(house_part) <= 15:
+                                    data['house_no'] = house_part
+                                    break
+                    if data.get('house_no') and re.search(r'\d', str(data.get('house_no', ''))):
+                        break
+
+                # Strategy 2: Look for standalone alphanumeric patterns (like "17A", "12/1")
+                # Usually house number appears after line 4-5 (after name, father name)
+                if i >= 3 and not data.get('house_no'):
+                    # Look for patterns like: 17, 17A, 12/1, 1-2-3, 12.A
+                    house_patterns = [
+                        r'\b(\d{1,4}[A-Za-z])\b',           # 17A, 12B
+                        r'\b(\d{1,4}/\d{1,4})\b',           # 12/1, 1/2
+                        r'\b(\d{1,4}-[A-Za-z0-9]+)\b',      # 12-A, 1-2-3
+                        r'\b(\d{1,4}\.[A-Za-z])\b',         # 12.A
+                    ]
+                    for pattern in house_patterns:
+                        match = re.search(pattern, line)
+                        if match:
+                            house_part = match.group(1)
+                            # Make sure it's not age (2 digits only) or serial number
+                            if len(house_part) > 2 or not house_part.isdigit():
+                                data['house_no'] = house_part
+                                break
+                    if data.get('house_no'):
+                        break
+
+            # ===== PASS 1: Fast crop approach (only if Pass 0 failed) =====
+            if not data.get('house_no') or not re.search(r'\d', str(data.get('house_no', ''))):
+                house_crop = img.crop((0, int(height * 0.40), width, int(height * 0.65)))
+                try:
+                    house_crop_processed = house_crop.convert('L')
+                    house_crop_processed = ImageEnhance.Contrast(house_crop_processed).enhance(2.0)
+                    crop_text = pytesseract.image_to_string(house_crop_processed, lang='tam+eng')
+
+                    for line in crop_text.split('\n'):
+                        line = line.strip()
+                        has_tamil_match = ('வீட்டு' in line or 'ட்டு' in line or
+                                           'எண்' in line or 'எண' in line or
+                                           'வட்டு' in line or 'வீட்' in line)
+                        if has_tamil_match and ':' in line:
+                            after_colon = line.split(':', 1)[-1]
+                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_colon.strip())
+                            if match:
+                                house_part = match.group(1).strip().rstrip('.,;:')
+                                if house_part and re.search(r'\d', house_part):
+                                    data['house_no'] = house_part
+                                    break
+                except:
+                    pass
+
+            # ===== PASS 2: Thorough approach (only if Pass 1 failed) =====
+            if not data.get('house_no') or not re.search(r'\d', str(data.get('house_no', ''))):
+                # Multiple crop regions to try
+                crop_regions = [
+                    (0.35, 0.55),  # Higher position
+                    (0.45, 0.70),  # Lower position
+                    (0.30, 0.60),  # Wider range
+                ]
+
+                # Multiple preprocessing approaches
+                preprocessings = [
+                    ('contrast', lambda i: ImageEnhance.Contrast(i.convert('L')).enhance(2.5)),
+                    ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
+                    ('sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.5)),
+                ]
+
+                # Alternative separators
+                separators = [':', ';', '-', '.']
+
+                found = False
+                for crop_start, crop_end in crop_regions:
+                    if found:
+                        break
+
+                    house_crop = img.crop((0, int(height * crop_start), width, int(height * crop_end)))
+
+                    for prep_name, prep_func in preprocessings:
+                        if found:
+                            break
+
+                        try:
+                            processed = prep_func(house_crop)
+                            crop_text = pytesseract.image_to_string(processed, lang='tam+eng')
+
+                            for line in crop_text.split('\n'):
+                                line = line.strip()
+                                if not line:
+                                    continue
+
+                                # Try 1: Tamil match with alternative separators
+                                has_tamil_match = ('வீட்டு' in line or 'ட்டு' in line or
+                                                   'எண்' in line or 'எண' in line or
+                                                   'வட்டு' in line or 'வீட்' in line)
+                                if has_tamil_match:
+                                    for sep in separators:
+                                        if sep in line:
+                                            after_sep = line.split(sep, 1)[-1]
+                                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_sep.strip())
+                                            if match:
+                                                house_part = match.group(1).strip().rstrip('.,;:')
+                                                if house_part and re.search(r'\d', house_part):
+                                                    data['house_no'] = house_part
+                                                    found = True
+                                                    break
+                                    if found:
+                                        break
+
+                            # Try 2: Fallback - any line with separator + digit pattern (if Tamil match failed)
+                            if not found:
+                                for line in crop_text.split('\n'):
+                                    line = line.strip()
+                                    for sep in separators:
+                                        if sep in line:
+                                            after_sep = line.split(sep, 1)[-1].strip()
+                                            # Look for house number pattern: digits with optional letters/symbols
+                                            match = re.match(r'^(\d+[A-Za-z/\-\.]*[A-Za-z]?)', after_sep)
+                                            if match:
+                                                house_part = match.group(1).strip().rstrip('.,;:')
+                                                if house_part and len(house_part) <= 10:  # Reasonable length
+                                                    data['house_no'] = house_part
+                                                    found = True
+                                                    break
+                                    if found:
+                                        break
+                        except:
+                            continue
+
+        # v5.3: Three-pass extraction for Name (similar strategy to house number)
+        name_val = data.get('name', '')
+        if not name_val:
+            # ===== PASS 0: Re-parse initial OCR text for Name =====
+            for line in text.split('\n'):
+                line = line.strip()
+                # Look for பெயர் : but NOT தந்தை/கணவர்/தாய் பெயர்
+                if 'பெயர்' in line or 'பெயர' in line:
+                    if 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line and 'இதரர்' not in line:
+                        for sep in [':', ';', '-', '.']:
+                            if sep in line:
+                                name_part = line.split(sep, 1)[-1].strip()
+                                # Clean common OCR artifacts
+                                name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                if name_part and len(name_part) > 1:
+                                    data['name'] = name_part
+                                    break
+                        if data.get('name'):
+                            break
+
+            # ===== PASS 1: Crop OCR for Name (only if Pass 0 failed) =====
+            # Balanced: 2 crop regions × 2 preprocessing = max 4 OCR calls
+            if not data.get('name'):
+                name_crop_regions = [(0.0, 0.45), (0.05, 0.40)]
+                name_preprocessings = [
+                    lambda i: ImageEnhance.Contrast(i.convert('L')).enhance(2.0),
+                    lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0),
+                ]
+
+                found_name = False
+                for crop_start, crop_end in name_crop_regions:
+                    if found_name:
+                        break
+                    name_crop = img.crop((0, int(height * crop_start), width, int(height * crop_end)))
+
+                    for prep_func in name_preprocessings:
+                        if found_name:
+                            break
+                        try:
+                            processed = prep_func(name_crop)
+                            crop_text = pytesseract.image_to_string(processed, lang='tam+eng')
+
+                            for line in crop_text.split('\n'):
+                                line = line.strip()
+                                if ('பெயர்' in line or 'பெயர' in line) and 'தந்தை' not in line and 'கணவர்' not in line and 'தாய்' not in line:
+                                    for sep in [':', ';', '-', '.']:
+                                        if sep in line:
+                                            name_part = line.split(sep, 1)[-1].strip()
+                                            name_part = re.sub(r'\s*Photo\s*is\s*', ' ', name_part, flags=re.IGNORECASE)
+                                            name_part = re.sub(r'\s*available\s*', ' ', name_part, flags=re.IGNORECASE)
+                                            name_part = re.sub(r'^[\s\-–.,:]+|[\s\-–.,:]+$', '', name_part)
+                                            name_part = re.sub(r'\s+', ' ', name_part).strip()
+                                            if name_part and len(name_part) > 1:
+                                                data['name'] = name_part
+                                                found_name = True
+                                                break
+                                    if found_name:
+                                        break
+                        except:
+                            continue
+
+        # v5.7: Combined Age+Gender extraction (SPEED OPTIMIZED)
+        # Pass 0: Re-parse initial OCR text for Age
+        age_val = data.get('age', '')
+        if not age_val:
+            for line in text.split('\n'):
+                line = line.strip()
+                has_age_hint = ('வயது' in line or 'வயத' in line or 'யது' in line or 'Age' in line.lower())
+                if has_age_hint:
+                    age_patterns = [
+                        r'வயத[ுு]?\s*[:;.\-~=]\s*(\d{1,3})',
+                        r'யது\s*[:;.\-~=]\s*(\d{1,3})',
+                        r'Age\s*[:;.\-~=]\s*(\d{1,3})',
+                        r'[:;]\s*(\d{2})\s+',
+                    ]
+                    for pattern in age_patterns:
+                        age_match = re.search(pattern, line, re.IGNORECASE)
+                        if age_match:
+                            age_num = age_match.group(1)
+                            if 18 <= int(age_num) <= 120:
+                                data['age'] = age_num
+                                break
+                    if data.get('age'):
+                        break
+
+        # Pass 0: Re-parse initial OCR text for Gender
+        gender_val = data.get('gender', '')
+        if not gender_val:
+            for line in text.split('\n'):
+                line = line.strip()
+                has_gender_hint = ('பாலினம்' in line or 'பாலின' in line or 'லினம்' in line or
+                                   'பால' in line or 'Gender' in line.lower() or 'Sex' in line.lower())
+                if has_gender_hint:
+                    if 'ஆண்' in line or 'ஆண' in line or 'Male' in line:
+                        data['gender'] = 'Male'
+                        break
+                    elif 'பெண்' in line or 'பெண' in line or 'Female' in line:
+                        data['gender'] = 'Female'
+                        break
+                    elif 'திருநங்கை' in line or 'மூன்றாம்' in line or 'Third' in line:
+                        data['gender'] = 'Third Gender'
+                        break
+
+            # Fallback: standalone ஆண் or பெண் anywhere in text
+            if not data.get('gender'):
+                if 'ஆண்' in text or 'ஆண' in text:
+                    data['gender'] = 'Male'
+                elif 'பெண்' in text or 'பெண' in text:
+                    data['gender'] = 'Female'
+
+        # Pass 1: COMBINED crop OCR for Age+Gender (only if either is missing)
+        # v5.9: Expanded Age crops (3 regions × 3 preprocessing) while keeping Gender efficient
+        need_age = not data.get('age')
+        need_gender = not data.get('gender')
+        if need_age or need_gender:
+            # More crop regions for better Age coverage
+            bottom_crop_regions = [
+                (0.55, 1.0),   # Standard bottom half
+                (0.60, 0.95),  # Slightly higher start
+                (0.50, 0.85),  # Higher position (age sometimes appears earlier)
+                (0.65, 1.0),   # Lower position only
+            ]
+            # 3 preprocessing approaches
+            bottom_preprocessings = [
+                lambda i: ImageEnhance.Contrast(i.convert('L')).enhance(2.0),
+                lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1'),
+                lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.5),
+            ]
+
+            for crop_start, crop_end in bottom_crop_regions:
+                if not need_age and not need_gender:
+                    break
+                bottom_crop = img.crop((0, int(height * crop_start), width, int(height * crop_end)))
+
+                for prep_func in bottom_preprocessings:
+                    if not need_age and not need_gender:
+                        break
+                    try:
+                        processed = prep_func(bottom_crop)
+                        crop_text = pytesseract.image_to_string(processed, lang='tam+eng')
+
+                        # Extract Age from crop - v5.9: More flexible patterns
+                        if need_age:
+                            # Expanded age patterns
+                            age_patterns = [
+                                r'வயத[ுு]?\s*[:;.\-~=]\s*(\d{1,3})',
+                                r'யது\s*[:;.\-~=]\s*(\d{1,3})',
+                                r'Age\s*[:;.\-~=]\s*(\d{1,3})',
+                                r'[:;]\s*(\d{2})\s+',
+                                r'வயது\s*(\d{1,3})',  # Without separator
+                                r'(\d{2})\s*வயது',   # Age before வயது
+                                r'[:\s](\d{2})[\s,]',  # Loose pattern
+                            ]
+
+                            for line in crop_text.split('\n'):
+                                line = line.strip()
+                                has_age_hint = ('வயது' in line or 'வயத' in line or 'யது' in line or
+                                               'Age' in line.lower() or re.search(r':\s*\d{2}\s', line))
+                                if has_age_hint:
+                                    for pattern in age_patterns:
+                                        age_match = re.search(pattern, line, re.IGNORECASE)
+                                        if age_match:
+                                            age_num = age_match.group(1)
+                                            if 18 <= int(age_num) <= 120:
+                                                data['age'] = age_num
+                                                need_age = False
+                                                break
+                                    if not need_age:
+                                        break
+
+                            # Fallback 1: Any line with 2-digit number after colon
+                            if need_age:
+                                for line in crop_text.split('\n'):
+                                    colon_match = re.search(r':\s*(\d{2})\b', line)
+                                    if colon_match:
+                                        age_num = colon_match.group(1)
+                                        if 18 <= int(age_num) <= 99:
+                                            data['age'] = age_num
+                                            need_age = False
+                                            break
+
+                            # Fallback 2: standalone 2-digit number in valid age range
+                            if need_age:
+                                all_numbers = re.findall(r'\b(\d{2})\b', crop_text)
+                                for num in all_numbers:
+                                    if 18 <= int(num) <= 99:
+                                        data['age'] = num
+                                        need_age = False
+                                        break
+
+                        # Extract Gender from crop
+                        if need_gender:
+                            for line in crop_text.split('\n'):
+                                line = line.strip()
+                                has_gender_hint = ('பாலினம்' in line or 'பாலின' in line or 'லினம்' in line or 'பால' in line)
+                                if has_gender_hint:
+                                    if 'ஆண்' in line or 'ஆண' in line:
+                                        data['gender'] = 'Male'
+                                        need_gender = False
+                                        break
+                                    elif 'பெண்' in line or 'பெண' in line:
+                                        data['gender'] = 'Female'
+                                        need_gender = False
+                                        break
+
+                            # Fallback: standalone ஆண் or பெண்
+                            if need_gender:
+                                if 'ஆண்' in crop_text or 'ஆண' in crop_text:
+                                    data['gender'] = 'Male'
+                                    need_gender = False
+                                elif 'பெண்' in crop_text or 'பெண' in crop_text:
+                                    data['gender'] = 'Female'
+                                    need_gender = False
+                    except:
+                        continue
 
         # Handle both Path objects and strings
         if hasattr(jpg_path, 'stem'):
@@ -465,13 +866,21 @@ def parse_voter_card_standalone(text):
                 data['relation_name'] = rel_part
                 data['relation_type'] = 'Other'
 
-        # Extract house number
-        if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
-            house_part = line.split(':', 1)[-1].strip()
-            house_part = house_part.split()[0] if house_part else ''  # First word only
-            house_part = house_part.rstrip('.,;:')  # Remove trailing punctuation
-            if house_part and not data['house_no']:
-                data['house_no'] = house_part
+        # Extract house number (v4.9: partial Tamil match + extract until 3 spaces)
+        if not data['house_no']:
+            has_tamil_match = ('வீட்டு' in line or 'ட்டு' in line or
+                               'எண்' in line or 'எண' in line or
+                               'வட்டு' in line or 'வீட்' in line)
+            if has_tamil_match and ':' in line:
+                after_colon = line.split(':', 1)[-1]
+                # Extract until 3 consecutive spaces (end of house number)
+                house_match = re.match(r'^(.+?)(?:\s{3,}|$)', after_colon.strip())
+                if house_match:
+                    house_part = house_match.group(1).strip()
+                    house_part = house_part.rstrip('.,;:')
+                    # Validate: must have at least one digit
+                    if house_part and re.search(r'\d', house_part):
+                        data['house_no'] = house_part
 
         # Extract age
         if 'வயது' in line and ':' in line:
@@ -657,7 +1066,7 @@ class CheckpointManager:
 class VoterCounterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Electoral Roll Voter Counter v4.5 (FAST - Batch)")
+        self.root.title("Electoral Roll Voter Counter v5.8 (FAST - Batch)")
         self.root.geometry("850x800")
         self.root.resizable(True, True)
 
@@ -680,7 +1089,7 @@ class VoterCounterApp:
 
         title_label = ttk.Label(
             main_frame,
-            text="Tamil Nadu Electoral Roll\nVoter Counter v4.5 (Batch Mode)",
+            text="Tamil Nadu Electoral Roll\nVoter Counter v5.8 (Batch Mode)",
             style='Title.TLabel',
             justify=tk.CENTER
         )
@@ -1114,6 +1523,76 @@ class VoterCounterApp:
             all_cards = self.checkpoint.get_all_cards()
             ocr_results = self.checkpoint.get_ocr_results()
 
+        # ===== PHASE 2 COMPLETION REPORT =====
+        # Count missing fields after Phase 2 (before Phase 3)
+        phase2_missing_name = 0
+        phase2_missing_age = 0
+        phase2_missing_gender = 0
+        phase2_missing_house_no = 0
+        phase2_failing_cards = []
+
+        for global_idx, (s_no, data, pdf_name) in ocr_results.items():
+            if data:
+                if not data.get('name'):
+                    phase2_missing_name += 1
+                if not data.get('age'):
+                    phase2_missing_age += 1
+                if not data.get('gender'):
+                    phase2_missing_gender += 1
+                house_no = data.get('house_no', '')
+                if not house_no or not re.search(r'\d', str(house_no)):
+                    phase2_missing_house_no += 1
+                    # Save failing card info for analysis
+                    card_info = all_cards[global_idx] if global_idx < len(all_cards) else None
+                    phase2_failing_cards.append({
+                        'global_idx': global_idx,
+                        's_no': s_no,
+                        'pdf_name': pdf_name,
+                        'card_path': str(card_info[0]) if card_info else 'N/A',
+                        'extracted_house_no': house_no,
+                        'name': data.get('name', ''),
+                    })
+            else:
+                phase2_missing_name += 1
+                phase2_missing_age += 1
+                phase2_missing_gender += 1
+                phase2_missing_house_no += 1
+
+        # Save failing cards to log file
+        log_file = folder_path.parent / f"{constituency_name}_phase2_failures.json"
+        try:
+            with open(log_file, 'w', encoding='utf-8') as f:
+                json.dump({
+                    'total_cards': len(ocr_results),
+                    'missing_house_no_count': phase2_missing_house_no,
+                    'failing_cards': phase2_failing_cards[:100]  # First 100 for analysis
+                }, f, ensure_ascii=False, indent=2)
+        except:
+            pass
+
+        # Show Phase 2 report in console and GUI
+        phase2_report = (
+            f"===== PHASE 2 COMPLETE =====\n"
+            f"Total Cards: {len(ocr_results):,}\n"
+            f"Missing Name: {phase2_missing_name:,}\n"
+            f"Missing House No: {phase2_missing_house_no:,}\n"
+            f"Missing Age: {phase2_missing_age:,}\n"
+            f"Missing Gender: {phase2_missing_gender:,}\n"
+            f"Log file: {log_file}"
+        )
+        print(phase2_report)  # Print to console for visibility
+
+        self.root.after(0, lambda: self.phase_var.set("Phase 2 Complete - Starting Phase 3..."))
+        self.root.after(0, lambda: self.update_quality_text(
+            f"Phase 2 Results (before Phase 3):\n"
+            f"Total: {len(ocr_results):,}\n"
+            f"Missing Name: {phase2_missing_name:,}\n"
+            f"Missing House No: {phase2_missing_house_no:,}\n"
+            f"Missing Age: {phase2_missing_age:,}\n"
+            f"Missing Gender: {phase2_missing_gender:,}\n\n"
+            f"Failures log: {log_file.name}"
+        ))
+
         # ===== PHASE 3: Enhanced OCR for missing Name/Age/Gender =====
         if current_phase < 3:
             self.root.after(0, lambda: self.phase_var.set("Phase 3/4: Fixing missing Name/Age/Gender/House No..."))
@@ -1223,6 +1702,7 @@ class VoterCounterApp:
         missing_name_count = 0
         missing_age_count = 0
         missing_gender_count = 0
+        missing_house_no_count = 0
 
         for global_idx in sorted(ocr_results.keys()):
             s_no, data, pdf_name = ocr_results[global_idx]
@@ -1245,7 +1725,13 @@ class VoterCounterApp:
 
                 ws.cell(row=row_num, column=5, value=data.get('relation_type', ''))
                 ws.cell(row=row_num, column=6, value=data.get('relation_name', ''))
-                ws.cell(row=row_num, column=7, value=data.get('house_no', ''))
+
+                house_no_val = data.get('house_no', '')
+                house_no_cell = ws.cell(row=row_num, column=7, value=house_no_val)
+                # House number is invalid if empty OR has no digits
+                if not house_no_val or not re.search(r'\d', str(house_no_val)):
+                    house_no_cell.fill = yellow_fill
+                    missing_house_no_count += 1
 
                 age_val = data.get('age', '')
                 gender_val = data.get('gender', '')
@@ -1262,9 +1748,10 @@ class VoterCounterApp:
             else:
                 for col in range(3, 10):
                     cell = ws.cell(row=row_num, column=col, value='')
-                    if col in [4, 8, 9]:  # Name, Age, Gender columns
+                    if col in [4, 7, 8, 9]:  # Name, House No, Age, Gender columns
                         cell.fill = yellow_fill
                 missing_name_count += 1
+                missing_house_no_count += 1
                 missing_age_count += 1
                 missing_gender_count += 1
 
@@ -1289,7 +1776,7 @@ class VoterCounterApp:
 
         # Update quality display
         total_cards_final = len(ocr_results)
-        max_missing = max(missing_name_count, missing_age_count, missing_gender_count)
+        max_missing = max(missing_name_count, missing_age_count, missing_gender_count, missing_house_no_count)
         complete = total_cards_final - max_missing
         completeness = (complete / total_cards_final * 100) if total_cards_final > 0 else 0
 
@@ -1300,6 +1787,7 @@ class VoterCounterApp:
         report = (
             f"Total: {total_cards_final:,}\n"
             f"Missing Name: {missing_name_count:,}\n"
+            f"Missing House No: {missing_house_no_count:,}\n"
             f"Missing Age: {missing_age_count:,}\n"
             f"Missing Gender: {missing_gender_count:,}\n"
             f"Completeness: {completeness:.1f}%"
@@ -1313,7 +1801,7 @@ class VoterCounterApp:
 
         self.root.after(0, lambda: self.progress.config(value=100))
         self.root.after(0, lambda e=elapsed_str, ep=str(excel_path), tc=total_cards_final:
-                        self.batch_complete(e, ep, tc, total_pdfs, missing_name_count, missing_age_count, missing_gender_count))
+                        self.batch_complete(e, ep, tc, total_pdfs, missing_name_count, missing_house_no_count, missing_age_count, missing_gender_count))
 
     def on_stopped(self):
         self.phase_var.set("Stopped - Progress Saved")
@@ -1323,7 +1811,7 @@ class VoterCounterApp:
         self.status_var.set("Stopped. Progress saved.")
         messagebox.showinfo("Stopped", "Progress saved. Resume by selecting same folder.")
 
-    def batch_complete(self, elapsed_str, excel_path, total_cards, total_pdfs, missing_name, missing_age, missing_gender):
+    def batch_complete(self, elapsed_str, excel_path, total_cards, total_pdfs, missing_name, missing_house_no, missing_age, missing_gender):
         self.phase_var.set("Complete!")
         self.detail_var.set(f"Processed {total_cards:,} cards from {total_pdfs} PDFs")
         self.time_var.set(elapsed_str)
@@ -1335,6 +1823,7 @@ class VoterCounterApp:
             f"Processed {total_pdfs} PDFs!\n\n"
             f"Total cards: {total_cards:,}\n"
             f"Missing Name: {missing_name:,}\n"
+            f"Missing House No: {missing_house_no:,}\n"
             f"Missing Age: {missing_age:,}\n"
             f"Missing Gender: {missing_gender:,}\n"
             f"Time: {elapsed_str}\n\n"
