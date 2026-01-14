@@ -1,9 +1,22 @@
 """
-Electoral Roll Voter Counter - GUI Application v4.3 (FAST VERSION)
+Electoral Roll Voter Counter - GUI Application v4.6 (FAST VERSION)
 Extracts voter counts from Tamil Nadu Electoral Roll PDFs
 Optimized with parallel processing for faster OCR
 Supports batch processing of entire constituency folders
 Features checkpoint/resume capability for interrupted sessions
+
+v4.6 Features:
+- Phase 2 targeted crop OCR only for House Number (main problem):
+  * House Number: crop 40-70%, single OCR with contrast 2.0x
+- Name/Age/Gender handled by Phase 3 (faster overall)
+- Optimized for speed: only 1 extra OCR per card (for house number)
+
+v4.5 Features:
+- Phase 2 OCR with contrast enhancement (1.5x) for better accuracy
+
+v4.4 Features:
+- Phase 3 now fixes House Number (detects garbage like "பல்வ" with no digits)
+- House number re-OCR with 5 preprocessing approaches
 
 v4.3 Features:
 - Phase 2 OCR uses tam+eng (was tam only) - fixes number/symbol recognition
@@ -106,8 +119,32 @@ def ocr_single_card(args):
     jpg_path, global_idx, pdf_name = args
     try:
         img = Image.open(jpg_path)
-        text = pytesseract.image_to_string(img, lang='tam+eng')
+        enhanced_img = ImageEnhance.Contrast(img).enhance(1.5)  # Improve OCR accuracy
+        text = pytesseract.image_to_string(enhanced_img, lang='tam+eng')
         data = parse_voter_card_standalone(text)
+
+        # v4.6: If house number is empty or garbage (no digits), try targeted crop OCR
+        house_no = data.get('house_no', '')
+        if not house_no or not re.search(r'\d', str(house_no)):
+            # Crop middle region (40-70% of height) where house number is located
+            width, height = img.size
+            middle_crop = img.crop((0, int(height * 0.40), width, int(height * 0.70)))
+            middle_crop = ImageEnhance.Contrast(middle_crop).enhance(2.0)
+            try:
+                crop_text = pytesseract.image_to_string(middle_crop, lang='tam+eng')
+                for line in crop_text.split('\n'):
+                    if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
+                        house_part = line.split(':', 1)[-1].strip()
+                        house_part = house_part.split()[0] if house_part else ''
+                        house_part = house_part.rstrip('.,;:')
+                        if house_part and re.search(r'\d', house_part):
+                            data['house_no'] = house_part
+                            break
+            except:
+                pass
+
+        # Note: Name/Age/Gender crop OCR removed for speed - Phase 3 handles these
+
         # Handle both Path objects and strings
         if hasattr(jpg_path, 'stem'):
             stem = jpg_path.stem
@@ -126,15 +163,16 @@ def ocr_single_card(args):
 
 
 def enhanced_ocr_name_age_gender(args):
-    """Worker function for enhanced OCR focused on Name, Age and Gender."""
-    jpg_path, global_idx, need_name, need_age, need_gender = args
+    """Worker function for enhanced OCR focused on Name, Age, Gender and House Number."""
+    jpg_path, global_idx, need_name, need_age, need_gender, need_house_no = args
     try:
         # Handle both Path objects and strings
         img = Image.open(str(jpg_path) if hasattr(jpg_path, 'stem') else jpg_path)
 
         width, height = img.size
-        # Crop regions: top for name, bottom for age/gender
+        # Crop regions: top for name, middle for house no, bottom for age/gender
         top_crop = img.crop((0, 0, width, int(height * 0.45)))
+        middle_crop = img.crop((0, int(height * 0.40), width, int(height * 0.70)))  # House number area
         bottom_crop = img.crop((0, int(height * 0.65), width, height))
 
         # Try preprocessing approaches in order
@@ -146,7 +184,7 @@ def enhanced_ocr_name_age_gender(args):
             ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
         ]
 
-        result = {'name': '', 'age': '', 'gender': ''}
+        result = {'name': '', 'age': '', 'gender': '', 'house_no': ''}
 
         # Try top crop for Name
         if need_name:
@@ -200,12 +238,36 @@ def enhanced_ocr_name_age_gender(args):
                 except:
                     continue
 
+        # Try middle crop for House Number
+        if need_house_no:
+            for name, transform in approaches:
+                try:
+                    processed_img = transform(middle_crop)
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng')
+
+                    if not result['house_no']:
+                        for line in text.split('\n'):
+                            if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
+                                house_part = line.split(':', 1)[-1].strip()
+                                house_part = house_part.split()[0] if house_part else ''
+                                house_part = house_part.rstrip('.,;:')
+                                # Validate: must have at least one digit
+                                if house_part and re.search(r'\d', house_part):
+                                    result['house_no'] = house_part
+                                    break
+
+                    if result['house_no']:
+                        break
+                except:
+                    continue
+
         # Try full image if still missing anything
         still_need_name = need_name and not result['name']
         still_need_age = need_age and not result['age']
         still_need_gender = need_gender and not result['gender']
+        still_need_house_no = need_house_no and not result['house_no']
 
-        if still_need_name or still_need_age or still_need_gender:
+        if still_need_name or still_need_age or still_need_gender or still_need_house_no:
             for name, transform in approaches:
                 try:
                     processed_img = transform(img)
@@ -235,11 +297,22 @@ def enhanced_ocr_name_age_gender(args):
                             elif 'பெண்' in text:
                                 result['gender'] = 'Female'
 
+                    if still_need_house_no and not result['house_no']:
+                        for line in text.split('\n'):
+                            if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
+                                house_part = line.split(':', 1)[-1].strip()
+                                house_part = house_part.split()[0] if house_part else ''
+                                house_part = house_part.rstrip('.,;:')
+                                if house_part and re.search(r'\d', house_part):
+                                    result['house_no'] = house_part
+                                    break
+
                     # Check if we got everything we needed
                     got_name = not need_name or result['name']
                     got_age = not need_age or result['age']
                     got_gender = not need_gender or result['gender']
-                    if got_name and got_age and got_gender:
+                    got_house_no = not need_house_no or result['house_no']
+                    if got_name and got_age and got_gender and got_house_no:
                         break
                 except:
                     continue
@@ -584,7 +657,7 @@ class CheckpointManager:
 class VoterCounterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Electoral Roll Voter Counter v4.3 (FAST - Batch)")
+        self.root.title("Electoral Roll Voter Counter v4.5 (FAST - Batch)")
         self.root.geometry("850x800")
         self.root.resizable(True, True)
 
@@ -607,7 +680,7 @@ class VoterCounterApp:
 
         title_label = ttk.Label(
             main_frame,
-            text="Tamil Nadu Electoral Roll\nVoter Counter v4.3 (Batch Mode)",
+            text="Tamil Nadu Electoral Roll\nVoter Counter v4.5 (Batch Mode)",
             style='Title.TLabel',
             justify=tk.CENTER
         )
@@ -681,7 +754,7 @@ class VoterCounterApp:
         ttk.Label(stats_inner, textvariable=self.time_var, style='Big.TLabel', foreground='#4CAF50').grid(row=3, column=1, sticky=tk.E, pady=3, padx=10)
 
         # Data Quality frame
-        quality_frame = ttk.LabelFrame(main_frame, text="Data Quality (Name, Age & Gender)", padding="10")
+        quality_frame = ttk.LabelFrame(main_frame, text="Data Quality (Name, Age, Gender & House No)", padding="10")
         quality_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         quality_grid = ttk.Frame(quality_frame)
@@ -1043,7 +1116,7 @@ class VoterCounterApp:
 
         # ===== PHASE 3: Enhanced OCR for missing Name/Age/Gender =====
         if current_phase < 3:
-            self.root.after(0, lambda: self.phase_var.set("Phase 3/4: Fixing missing Name/Age/Gender..."))
+            self.root.after(0, lambda: self.phase_var.set("Phase 3/4: Fixing missing Name/Age/Gender/House No..."))
             self.root.after(0, lambda: self.progress.config(value=0))
 
             enhanced_done = set(self.checkpoint.data.get('enhanced_ocr_done', []))
@@ -1056,10 +1129,13 @@ class VoterCounterApp:
                     need_name = not data.get('name')
                     need_age = not data.get('age')
                     need_gender = not data.get('gender')
-                    if need_name or need_age or need_gender:
+                    # House number needs fixing if empty OR has no digits (garbage like "பல்வ")
+                    house_no = data.get('house_no', '')
+                    need_house_no = not house_no or not re.search(r'\d', str(house_no))
+                    if need_name or need_age or need_gender or need_house_no:
                         card_info = all_cards[global_idx]
                         jpg_path = card_info[0]
-                        cards_to_fix.append((jpg_path, global_idx, need_name, need_age, need_gender))
+                        cards_to_fix.append((jpg_path, global_idx, need_name, need_age, need_gender, need_house_no))
 
             if cards_to_fix:
                 total_to_fix = len(cards_to_fix)
@@ -1086,6 +1162,12 @@ class VoterCounterApp:
                                         old_data['age'] = enhanced_data['age']
                                     if not old_data.get('gender') and enhanced_data.get('gender'):
                                         old_data['gender'] = enhanced_data['gender']
+                                    # Update house_no if old one was garbage (no digits) and new one has digits
+                                    old_house = old_data.get('house_no', '')
+                                    new_house = enhanced_data.get('house_no', '')
+                                    if new_house and re.search(r'\d', new_house):
+                                        if not old_house or not re.search(r'\d', str(old_house)):
+                                            old_data['house_no'] = new_house
                                     self.checkpoint.add_ocr_result(global_idx, s_no, old_data, pdf_name)
 
                             fixed_count += 1
