@@ -205,9 +205,10 @@ def ocr_single_card(args):
     try:
         img = Image.open(jpg_path)
         width, height = img.size  # Get dimensions early for all extractions
-        # Use scale_3x for better house number accuracy (like house_number_simple_5spaces.py)
-        scaled_img = img.resize((width * 3, height * 3), Image.LANCZOS)
-        text = pytesseract.image_to_string(scaled_img, lang='tam+eng')
+        # Use scale_4x + contrast for best accuracy (A vs & fix)
+        scaled_img = img.resize((width * 4, height * 4), Image.LANCZOS)
+        enhanced_img = ImageEnhance.Contrast(scaled_img).enhance(1.5)
+        text = pytesseract.image_to_string(enhanced_img, lang='tam+eng')
         data = parse_voter_card_standalone(text)
 
         # v5.3: Three-pass extraction for all fields (House No, Name, Age, Gender)
@@ -261,14 +262,15 @@ def ocr_single_card(args):
                     if data.get('house_no'):
                         break
 
-            # ===== PASS 1: Fast crop approach with SCALE 3x (only if Pass 0 failed) =====
+            # ===== PASS 1: Fast crop approach with SCALE 4x + Contrast (only if Pass 0 failed) =====
             if not data.get('house_no') or not re.search(r'\d', str(data.get('house_no', ''))):
                 house_crop = img.crop((0, int(height * 0.40), width, int(height * 0.65)))
                 try:
-                    # Use scale_3x for better accuracy (like house_number_simple_5spaces.py)
-                    house_crop_processed = house_crop.resize(
-                        (house_crop.size[0] * 3, house_crop.size[1] * 3), Image.LANCZOS)
-                    crop_text = pytesseract.image_to_string(house_crop_processed, lang='tam+eng')
+                    # Use scale_4x + contrast for best accuracy (A vs & fix)
+                    house_crop_scaled = house_crop.resize(
+                        (house_crop.size[0] * 4, house_crop.size[1] * 4), Image.LANCZOS)
+                    house_crop_processed = ImageEnhance.Contrast(house_crop_scaled).enhance(1.5)
+                    crop_text = pytesseract.image_to_string(house_crop_processed, lang='tam+eng', config='--psm 4 --oem 1 -c tessedit_char_blacklist=&@#$%^*+=<>[]{}|~`')
 
                     for line in crop_text.split('\n'):
                         line = line.strip()
@@ -293,13 +295,13 @@ def ocr_single_card(args):
                     (0.30, 0.60),  # Wider range
                 ]
 
-                # Multiple preprocessing approaches (scale_3x/2x FIRST for better house number accuracy)
+                # Multiple preprocessing approaches (scale_4x+contrast FIRST for best accuracy)
                 preprocessings = [
+                    ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+                    ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+                    ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
                     ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
-                    ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
                     ('contrast', lambda i: ImageEnhance.Contrast(i.convert('L')).enhance(2.5)),
-                    ('sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.5)),
-                    ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
                 ]
 
                 # Alternative separators
@@ -607,14 +609,14 @@ def enhanced_ocr_name_age_gender(args):
         middle_crop = img.crop((0, int(height * 0.40), width, int(height * 0.70)))  # House number area
         bottom_crop = img.crop((0, int(height * 0.65), width, height))
 
-        # Try preprocessing approaches in order (scale_3x/2x FIRST for better house number accuracy)
+        # Try preprocessing approaches in order (scale_4x+contrast FIRST for best accuracy)
         approaches = [
+            ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+            ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+            ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
             ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
-            ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
             ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
             ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
-            ('original', lambda i: i),
-            ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
         ]
 
         result = {'name': '', 'age': '', 'gender': '', 'house_no': ''}
@@ -759,13 +761,14 @@ def enhanced_ocr_single_card(args):
     try:
         img = Image.open(jpg_path)
 
-        # Try preprocessing approaches in order (scale_3x/2x FIRST for better house number accuracy)
+        # Try preprocessing approaches in order (scale_4x+contrast FIRST for best accuracy)
         approaches = [
+            ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+            ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+            ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
             ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
-            ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
             ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
             ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
-            ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
         ]
 
         merged = {

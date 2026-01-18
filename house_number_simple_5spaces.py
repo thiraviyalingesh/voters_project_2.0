@@ -88,13 +88,14 @@ def ocr_with_all_approaches(img):
     """
     approaches = [
         ('Original', lambda i: i),
-        ('Contrast 2x', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
-        ('Contrast 3x', lambda i: ImageEnhance.Contrast(i).enhance(3.0)),
-        ('Grayscale', lambda i: i.convert('L')),
-        ('Gray+Sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
-        ('Binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
         ('Scale 2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
         ('Scale 3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
+        ('Scale 4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
+        ('Sc3x+Gray', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS).convert('L')),
+        ('Sc4x+Gray', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS).convert('L')),
+        ('Sc3x+Contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+        ('Sc4x+Contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+        ('Grayscale', lambda i: i.convert('L')),
     ]
 
     results = {}
@@ -173,6 +174,15 @@ class HouseNumber5SpacesViewer:
         # Navigation buttons
         nav_frame = ttk.Frame(info_row)
         nav_frame.pack(side=tk.RIGHT)
+
+        # Jump to card
+        ttk.Label(nav_frame, text="Jump to:").pack(side=tk.LEFT, padx=(0, 5))
+        self.jump_var = tk.StringVar()
+        jump_entry = ttk.Entry(nav_frame, textvariable=self.jump_var, width=8)
+        jump_entry.pack(side=tk.LEFT)
+        jump_entry.bind('<Return>', lambda e: self.jump_to_card())
+        ttk.Button(nav_frame, text="Go", command=self.jump_to_card, width=5).pack(side=tk.LEFT, padx=(2, 15))
+
         ttk.Button(nav_frame, text="<<<< Previous", command=self.prev_card,
                   width=15).pack(side=tk.LEFT, padx=5)
         ttk.Button(nav_frame, text="Next >>>>", command=self.next_card,
@@ -192,7 +202,7 @@ class HouseNumber5SpacesViewer:
 
         # Create labels for each approach
         self.approach_labels = {}
-        approaches = ['Original', 'Contrast 2x', 'Contrast 3x', 'Grayscale', 'Gray+Sharp', 'Binarize', 'Scale 2x', 'Scale 3x']
+        approaches = ['Original', 'Scale 2x', 'Scale 3x', 'Scale 4x', 'Sc3x+Gray', 'Sc4x+Gray', 'Sc3x+Contr', 'Sc4x+Contr', 'Grayscale']
 
         for i, approach in enumerate(approaches):
             row_frame = ttk.Frame(results_frame)
@@ -401,6 +411,20 @@ class HouseNumber5SpacesViewer:
             self.full_image_label.configure(image='', text=f"Error:\n{e}")
             import traceback
             traceback.print_exc()
+
+    def jump_to_card(self):
+        if not self.all_rows:
+            messagebox.showwarning("No Data", "Please load Excel file first!")
+            return
+        try:
+            card_num = int(self.jump_var.get())
+            if 1 <= card_num <= len(self.all_rows):
+                self.current_index = card_num - 1
+                self.display_current_card()
+            else:
+                messagebox.showwarning("Invalid", f"Enter a number between 1 and {len(self.all_rows)}")
+        except ValueError:
+            messagebox.showwarning("Invalid", "Enter a valid card number")
 
     def prev_card(self):
         if self.current_index > 0:
