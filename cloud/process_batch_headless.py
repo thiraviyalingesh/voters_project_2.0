@@ -246,6 +246,7 @@ def enhanced_ocr_name_age_gender(args):
             ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
             ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
             ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
+            ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
         ]
 
         result = {'name': '', 'age': '', 'gender': ''}

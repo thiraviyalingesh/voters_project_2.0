@@ -125,6 +125,42 @@ except ImportError:
     import pytesseract
 
 
+def clean_house_number(after_colon):
+    """
+    Clean house number using 5-spaces rule from house_number_simple_5spaces.py.
+    This is the WORKING logic that handles "Photo is" and Tamil characters.
+    """
+    if not after_colon:
+        return ''
+
+    # Method 1: Find where 5+ consecutive spaces occur
+    match = re.search(r'\s{5,}', after_colon)
+    if match:
+        house_part = after_colon[:match.start()].strip()
+    else:
+        # Method 2: No 5 spaces, look for "Photo" keyword
+        if 'Photo' in after_colon or 'photo' in after_colon:
+            house_part = re.split(r'Photo|photo|PHOTO|Photois', after_colon)[0].strip()
+        else:
+            # Method 3: Take first word only
+            house_part = after_colon.split()[0] if after_colon.split() else after_colon.strip()
+
+    # Clean common OCR mistakes
+    house_part = house_part.replace('°', '-')
+    house_part = house_part.replace('|', '1')
+    house_part = house_part.replace('%', 'A')
+    house_part = house_part.replace('$', 'S')
+
+    # Remove Tamil characters at end
+    house_part = re.sub(r'[அ-ஔக-னா-ௌ].*', '', house_part).strip()
+
+    # Final cleanup
+    house_part = house_part.rstrip('.,;:!?')
+    house_part = house_part.lstrip('.,;:!?')
+
+    return house_part
+
+
 def extract_part_number(pdf_name):
     """
     Extract part number from PDF filename.
@@ -169,7 +205,9 @@ def ocr_single_card(args):
     try:
         img = Image.open(jpg_path)
         width, height = img.size  # Get dimensions early for all extractions
-        enhanced_img = ImageEnhance.Contrast(img).enhance(1.5)  # Improve OCR accuracy
+        # Use scale_4x + contrast for best accuracy (A vs & fix)
+        scaled_img = img.resize((width * 4, height * 4), Image.LANCZOS)
+        enhanced_img = ImageEnhance.Contrast(scaled_img).enhance(1.5)
         text = pytesseract.image_to_string(enhanced_img, lang='tam+eng')
         data = parse_voter_card_standalone(text)
 
@@ -196,12 +234,10 @@ def ocr_single_card(args):
                     for sep in [':', ';', '-', '.', '~', '=']:
                         if sep in line:
                             after_sep = line.split(sep, 1)[-1]
-                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_sep.strip())
-                            if match:
-                                house_part = match.group(1).strip().rstrip('.,;:')
-                                if house_part and re.search(r'\d', house_part) and len(house_part) <= 15:
-                                    data['house_no'] = house_part
-                                    break
+                            house_part = clean_house_number(after_sep)
+                            if house_part and re.search(r'\d', house_part) and len(house_part) <= 15:
+                                data['house_no'] = house_part
+                                break
                     if data.get('house_no') and re.search(r'\d', str(data.get('house_no', ''))):
                         break
 
@@ -226,13 +262,15 @@ def ocr_single_card(args):
                     if data.get('house_no'):
                         break
 
-            # ===== PASS 1: Fast crop approach (only if Pass 0 failed) =====
+            # ===== PASS 1: Fast crop approach with SCALE 4x + Contrast (only if Pass 0 failed) =====
             if not data.get('house_no') or not re.search(r'\d', str(data.get('house_no', ''))):
                 house_crop = img.crop((0, int(height * 0.40), width, int(height * 0.65)))
                 try:
-                    house_crop_processed = house_crop.convert('L')
-                    house_crop_processed = ImageEnhance.Contrast(house_crop_processed).enhance(2.0)
-                    crop_text = pytesseract.image_to_string(house_crop_processed, lang='tam+eng')
+                    # Use scale_4x + contrast for best accuracy (A vs & fix)
+                    house_crop_scaled = house_crop.resize(
+                        (house_crop.size[0] * 4, house_crop.size[1] * 4), Image.LANCZOS)
+                    house_crop_processed = ImageEnhance.Contrast(house_crop_scaled).enhance(1.5)
+                    crop_text = pytesseract.image_to_string(house_crop_processed, lang='tam+eng', config='--psm 4 --oem 1 -c tessedit_char_blacklist=&@#$%^*+=<>[]{}|~`')
 
                     for line in crop_text.split('\n'):
                         line = line.strip()
@@ -241,12 +279,10 @@ def ocr_single_card(args):
                                            'வட்டு' in line or 'வீட்' in line)
                         if has_tamil_match and ':' in line:
                             after_colon = line.split(':', 1)[-1]
-                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_colon.strip())
-                            if match:
-                                house_part = match.group(1).strip().rstrip('.,;:')
-                                if house_part and re.search(r'\d', house_part):
-                                    data['house_no'] = house_part
-                                    break
+                            house_part = clean_house_number(after_colon)
+                            if house_part and re.search(r'\d', house_part):
+                                data['house_no'] = house_part
+                                break
                 except:
                     pass
 
@@ -259,11 +295,13 @@ def ocr_single_card(args):
                     (0.30, 0.60),  # Wider range
                 ]
 
-                # Multiple preprocessing approaches
+                # Multiple preprocessing approaches (scale_4x+contrast FIRST for best accuracy)
                 preprocessings = [
+                    ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+                    ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+                    ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
+                    ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
                     ('contrast', lambda i: ImageEnhance.Contrast(i.convert('L')).enhance(2.5)),
-                    ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
-                    ('sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.5)),
                 ]
 
                 # Alternative separators
@@ -297,13 +335,11 @@ def ocr_single_card(args):
                                     for sep in separators:
                                         if sep in line:
                                             after_sep = line.split(sep, 1)[-1]
-                                            match = re.match(r'^(.+?)(?:\s{3,}|$)', after_sep.strip())
-                                            if match:
-                                                house_part = match.group(1).strip().rstrip('.,;:')
-                                                if house_part and re.search(r'\d', house_part):
-                                                    data['house_no'] = house_part
-                                                    found = True
-                                                    break
+                                            house_part = clean_house_number(after_sep)
+                                            if house_part and re.search(r'\d', house_part):
+                                                data['house_no'] = house_part
+                                                found = True
+                                                break
                                     if found:
                                         break
 
@@ -313,15 +349,12 @@ def ocr_single_card(args):
                                     line = line.strip()
                                     for sep in separators:
                                         if sep in line:
-                                            after_sep = line.split(sep, 1)[-1].strip()
-                                            # Look for house number pattern: digits with optional letters/symbols
-                                            match = re.match(r'^(\d+[A-Za-z/\-\.]*[A-Za-z]?)', after_sep)
-                                            if match:
-                                                house_part = match.group(1).strip().rstrip('.,;:')
-                                                if house_part and len(house_part) <= 10:  # Reasonable length
-                                                    data['house_no'] = house_part
-                                                    found = True
-                                                    break
+                                            after_sep = line.split(sep, 1)[-1]
+                                            house_part = clean_house_number(after_sep)
+                                            if house_part and re.search(r'\d', house_part) and len(house_part) <= 10:
+                                                data['house_no'] = house_part
+                                                found = True
+                                                break
                                     if found:
                                         break
                         except:
@@ -576,13 +609,14 @@ def enhanced_ocr_name_age_gender(args):
         middle_crop = img.crop((0, int(height * 0.40), width, int(height * 0.70)))  # House number area
         bottom_crop = img.crop((0, int(height * 0.65), width, height))
 
-        # Try preprocessing approaches in order
+        # Try preprocessing approaches in order (scale_4x+contrast FIRST for best accuracy)
         approaches = [
-            ('original', lambda i: i),
-            ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
+            ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+            ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+            ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
+            ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
             ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
-            ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
-            ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
+            ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
         ]
 
         result = {'name': '', 'age': '', 'gender': '', 'house_no': ''}
@@ -649,9 +683,8 @@ def enhanced_ocr_name_age_gender(args):
                     if not result['house_no']:
                         for line in text.split('\n'):
                             if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
-                                house_part = line.split(':', 1)[-1].strip()
-                                house_part = house_part.split()[0] if house_part else ''
-                                house_part = house_part.rstrip('.,;:')
+                                after_colon = line.split(':', 1)[-1]
+                                house_part = clean_house_number(after_colon)
                                 # Validate: must have at least one digit
                                 if house_part and re.search(r'\d', house_part):
                                     result['house_no'] = house_part
@@ -701,9 +734,8 @@ def enhanced_ocr_name_age_gender(args):
                     if still_need_house_no and not result['house_no']:
                         for line in text.split('\n'):
                             if ('வீட்டு' in line or 'ட்டு' in line) and 'எண்' in line and ':' in line:
-                                house_part = line.split(':', 1)[-1].strip()
-                                house_part = house_part.split()[0] if house_part else ''
-                                house_part = house_part.rstrip('.,;:')
+                                after_colon = line.split(':', 1)[-1]
+                                house_part = clean_house_number(after_colon)
                                 if house_part and re.search(r'\d', house_part):
                                     result['house_no'] = house_part
                                     break
@@ -729,12 +761,14 @@ def enhanced_ocr_single_card(args):
     try:
         img = Image.open(jpg_path)
 
-        # Try preprocessing approaches in order, stop when all fields found
+        # Try preprocessing approaches in order (scale_4x+contrast FIRST for best accuracy)
         approaches = [
-            ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
+            ('scale_4x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)).enhance(1.5)),
+            ('scale_3x_contr', lambda i: ImageEnhance.Contrast(i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)).enhance(1.5)),
+            ('scale_4x', lambda i: i.resize((i.size[0] * 4, i.size[1] * 4), Image.LANCZOS)),
+            ('scale_3x', lambda i: i.resize((i.size[0] * 3, i.size[1] * 3), Image.LANCZOS)),
             ('grayscale_sharp', lambda i: ImageEnhance.Sharpness(i.convert('L')).enhance(2.0)),
-            ('binarize', lambda i: i.convert('L').point(lambda x: 0 if x < 140 else 255, '1')),
-            ('scale_2x', lambda i: i.resize((i.size[0] * 2, i.size[1] * 2), Image.LANCZOS)),
+            ('contrast', lambda i: ImageEnhance.Contrast(i).enhance(2.0)),
         ]
 
         merged = {
@@ -866,21 +900,17 @@ def parse_voter_card_standalone(text):
                 data['relation_name'] = rel_part
                 data['relation_type'] = 'Other'
 
-        # Extract house number (v4.9: partial Tamil match + extract until 3 spaces)
+        # Extract house number (using clean_house_number with 5-spaces rule)
         if not data['house_no']:
             has_tamil_match = ('வீட்டு' in line or 'ட்டு' in line or
                                'எண்' in line or 'எண' in line or
                                'வட்டு' in line or 'வீட்' in line)
             if has_tamil_match and ':' in line:
                 after_colon = line.split(':', 1)[-1]
-                # Extract until 3 consecutive spaces (end of house number)
-                house_match = re.match(r'^(.+?)(?:\s{3,}|$)', after_colon.strip())
-                if house_match:
-                    house_part = house_match.group(1).strip()
-                    house_part = house_part.rstrip('.,;:')
-                    # Validate: must have at least one digit
-                    if house_part and re.search(r'\d', house_part):
-                        data['house_no'] = house_part
+                house_part = clean_house_number(after_colon)
+                # Validate: must have at least one digit
+                if house_part and re.search(r'\d', house_part):
+                    data['house_no'] = house_part
 
         # Extract age
         if 'வயது' in line and ':' in line:
