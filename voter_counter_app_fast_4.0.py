@@ -502,7 +502,7 @@ def ocr_single_card(args):
                         break
                     try:
                         processed = prep_func(bottom_crop)
-                        crop_text = pytesseract.image_to_string(processed, lang='tam+eng')
+                        crop_text = pytesseract.image_to_string(processed, lang='tam+eng', config='--psm 4 --oem 1 -c tessedit_char_blacklist=&@#$%^*+=<>[]{}|~`')
 
                         # Extract Age from crop - v5.9: More flexible patterns
                         if need_age:
@@ -652,7 +652,7 @@ def enhanced_ocr_name_age_gender(args):
             for name, transform in approaches:
                 try:
                     processed_img = transform(bottom_crop)
-                    text = pytesseract.image_to_string(processed_img, lang='tam+eng')
+                    text = pytesseract.image_to_string(processed_img, lang='tam+eng', config='--psm 4 --oem 1 -c tessedit_char_blacklist=&@#$%^*+=<>[]{}|~`')
 
                     if need_age and not result['age']:
                         age_match = re.search(r'வயது\s*:\s*(\d+)', text)
