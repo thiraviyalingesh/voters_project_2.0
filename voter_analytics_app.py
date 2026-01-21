@@ -25,6 +25,7 @@ class VoterAnalyticsDashboard:
         self.df = None
         self.excel_path = None
         self.constituencies = []
+        self.part_numbers = []
 
         # Default age ranges
         self.age_ranges = [
@@ -76,6 +77,14 @@ class VoterAnalyticsDashboard:
         self.constituency_combo.pack(side=tk.LEFT, padx=(0, 10))
         self.constituency_combo.bind('<<ComboboxSelected>>', self.on_constituency_change)
 
+        # Part Number dropdown
+        ttk.Label(top_frame, text="Part No:").pack(side=tk.LEFT, padx=(0, 5))
+        self.part_no_var = tk.StringVar(value="All")
+        self.part_no_combo = ttk.Combobox(top_frame, textvariable=self.part_no_var,
+                                           state='readonly', width=10)
+        self.part_no_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self.part_no_combo.bind('<<ComboboxSelected>>', self.on_part_no_change)
+
         # Age range config
         ttk.Label(top_frame, text="Age Ranges:").pack(side=tk.LEFT, padx=(0, 5))
         self.age_range_var = tk.StringVar(value="18-25,26-35,36-45,46-55,56-65,66-75,76+")
@@ -116,11 +125,11 @@ class VoterAnalyticsDashboard:
         self.pie_canvas = FigureCanvasTkAgg(self.pie_fig, master=pie_frame)
         self.pie_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Religion Pie chart frame (middle)
-        religion_frame = ttk.LabelFrame(top_charts_frame, text="Religion Distribution", padding="5")
+        # Christian & Muslim Voters Chart
+        religion_frame = ttk.LabelFrame(top_charts_frame, text="Christian & Muslim Voters", padding="5")
         religion_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
-        self.religion_fig = Figure(figsize=(3.5, 3.5), dpi=100)
+        self.religion_fig = Figure(figsize=(5, 3.5), dpi=100)
         self.religion_ax = self.religion_fig.add_subplot(111)
         self.religion_canvas = FigureCanvasTkAgg(self.religion_fig, master=religion_frame)
         self.religion_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -196,11 +205,26 @@ class VoterAnalyticsDashboard:
                 # Use filename as constituency
                 self.constituencies = [Path(file_path).stem.replace('_excel', '')]
 
-            # Update combobox
+            # Update constituency combobox
             self.constituency_combo['values'] = self.constituencies
             if self.constituencies:
                 self.constituency_combo.current(0)
                 self.constituency_var.set(self.constituencies[0])
+
+            # Get part numbers
+            if 'Part No.' in self.df.columns:
+                part_nums = self.df['Part No.'].dropna().unique().tolist()
+                # Convert to string and sort numerically if possible
+                try:
+                    self.part_numbers = sorted([str(int(p)) for p in part_nums], key=lambda x: int(x))
+                except:
+                    self.part_numbers = sorted([str(p) for p in part_nums])
+            else:
+                self.part_numbers = []
+
+            # Update part number combobox
+            self.part_no_combo['values'] = ['All'] + self.part_numbers
+            self.part_no_var.set('All')
 
             # Update display
             self.update_dashboard()
@@ -280,15 +304,32 @@ class VoterAnalyticsDashboard:
     def on_constituency_change(self, event=None):
         self.update_dashboard()
 
+    def on_part_no_change(self, event=None):
+        self.update_dashboard()
+
     def get_filtered_df(self):
-        """Get dataframe filtered by selected constituency."""
+        """Get dataframe filtered by selected constituency and part number."""
         if self.df is None:
             return None
 
+        filtered_df = self.df
+
+        # Filter by constituency
         constituency = self.constituency_var.get()
-        if 'Constituency' in self.df.columns and constituency:
-            return self.df[self.df['Constituency'] == constituency]
-        return self.df
+        if 'Constituency' in filtered_df.columns and constituency:
+            filtered_df = filtered_df[filtered_df['Constituency'] == constituency]
+
+        # Filter by part number
+        part_no = self.part_no_var.get()
+        if part_no != 'All' and 'Part No.' in filtered_df.columns:
+            # Convert to same type for comparison
+            try:
+                part_no_int = int(part_no)
+                filtered_df = filtered_df[filtered_df['Part No.'] == part_no_int]
+            except:
+                filtered_df = filtered_df[filtered_df['Part No.'].astype(str) == part_no]
+
+        return filtered_df
 
     def update_dashboard(self):
         """Update all dashboard elements."""
@@ -350,6 +391,7 @@ class VoterAnalyticsDashboard:
             'female_pct': female_pct,
             'other_pct': other_pct,
             'constituency': self.constituency_var.get(),
+            'part_no': self.part_no_var.get(),
             'religion_stats': religion_stats
         }
 
@@ -412,64 +454,77 @@ class VoterAnalyticsDashboard:
         self.pie_canvas.draw()
 
     def update_religion_chart(self, df):
-        """Update the religion distribution pie chart."""
+        """Update the religion bar chart - Voters count for Christian & Muslim only."""
         self.religion_ax.clear()
 
         if 'Religion_Clean' not in df.columns:
-            self.religion_ax.text(0.5, 0.5, 'No Religion Data', ha='center', va='center',
+            self.religion_ax.text(0.5, 0.5, 'No Data', ha='center', va='center',
                                    fontsize=12, transform=self.religion_ax.transAxes)
-            self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+            self.religion_ax.set_title('Christian & Muslim Voters',
                                         fontsize=11, fontweight='bold', pad=10)
             self.religion_fig.tight_layout()
             self.religion_canvas.draw()
             return
 
-        # Get religion counts
-        religion_counts = df['Religion_Clean'].value_counts()
-
-        # Filter out empty/nan values but keep 'Unknown'
-        religion_counts = religion_counts[
-            (religion_counts.index != '') &
-            (religion_counts.index.str.lower() != 'nan') &
-            (religion_counts.index.str.lower() != 'none')
+        # Get VOTERS count by religion
+        voter_counts = df['Religion_Clean'].value_counts()
+        voter_counts = voter_counts[
+            (voter_counts.index != '') &
+            (voter_counts.index.str.lower() != 'nan') &
+            (voter_counts.index.str.lower() != 'none')
         ]
+        # Exclude Hindu - show only Christian & Muslim
+        voter_counts = voter_counts[~voter_counts.index.str.lower().isin(['hindu', 'unknown'])]
 
-        if len(religion_counts) == 0:
-            self.religion_ax.text(0.5, 0.5, 'No Religion Data', ha='center', va='center',
+        # Get religions (Christian, Muslim)
+        religions = list(voter_counts.index)
+        religions = [r for r in religions if r.lower() not in ['hindu', 'unknown', '', 'nan', 'none']]
+        religions = sorted(religions)
+
+        if len(religions) == 0:
+            self.religion_ax.text(0.5, 0.5, 'No Christian/Muslim Data', ha='center', va='center',
                                    fontsize=12, transform=self.religion_ax.transAxes)
-            self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+            self.religion_ax.set_title('Christian & Muslim Voters',
                                         fontsize=11, fontweight='bold', pad=10)
             self.religion_fig.tight_layout()
             self.religion_canvas.draw()
             return
 
-        # Prepare data - show only percentages, no counts
-        labels = []
-        sizes = []
-        # Color palette for religions
-        religion_colors = ['#4CAF50', '#FF9800', '#9C27B0', '#00BCD4', '#E91E63',
-                           '#3F51B5', '#FFEB3B', '#795548', '#607D8B', '#F44336']
+        # Prepare data for horizontal bar chart
+        voters_data = [voter_counts.get(r, 0) for r in religions]
 
-        for i, (religion, count) in enumerate(religion_counts.items()):
-            labels.append(religion)
-            sizes.append(count)
+        # Create horizontal bar chart (TRUE bar chart)
+        import numpy as np
+        y = np.arange(len(religions))
+        height = 0.5
 
-        colors = religion_colors[:len(sizes)]
-        explode = [0.02] * len(sizes)
+        # Different color for each religion (sorted: Christian, Muslim)
+        colors = ['#2196F3', '#4CAF50']  # Blue for Christian, Green for Muslim
+        bar_colors = [colors[i % len(colors)] for i in range(len(religions))]
 
-        if sizes:
-            wedges, texts, autotexts = self.religion_ax.pie(
-                sizes, labels=labels, colors=colors, explode=explode,
-                autopct='%1.2f%%', startangle=90,
-                textprops={'fontsize': 8, 'fontweight': 'bold'}
-            )
-            for autotext in autotexts:
-                autotext.set_color('white')
-                autotext.set_fontweight('bold')
-                autotext.set_fontsize(7)
+        bars = self.religion_ax.barh(y, voters_data, height, color=bar_colors)
 
-        self.religion_ax.set_title(f'Religion Distribution - {self.constituency_var.get()}',
+        # Add value labels on bars
+        for bar in bars:
+            width = bar.get_width()
+            self.religion_ax.annotate(f'{int(width):,}',
+                                       xy=(width, bar.get_y() + bar.get_height() / 2),
+                                       xytext=(5, 0), textcoords="offset points",
+                                       ha='left', va='center', fontsize=9, fontweight='bold')
+
+        self.religion_ax.set_yticks(y)
+        self.religion_ax.set_yticklabels(religions, fontsize=10)
+        self.religion_ax.set_xlabel('Voters', fontsize=9)
+        self.religion_ax.set_title('Christian & Muslim Voters',
                                     fontsize=11, fontweight='bold', pad=10)
+
+        # Add extra space at right for labels
+        max_val = max(voters_data) if voters_data else 0
+        self.religion_ax.set_xlim(0, max_val * 1.2)
+
+        # Style
+        self.religion_ax.spines['top'].set_visible(False)
+        self.religion_ax.spines['right'].set_visible(False)
 
         self.religion_fig.tight_layout()
         self.religion_canvas.draw()
@@ -611,8 +666,10 @@ class VoterAnalyticsDashboard:
                 # Page 1: Summary and Pie Chart
                 fig1 = Figure(figsize=(11, 8.5), dpi=100)
 
-                # Title
-                fig1.suptitle(f"Voter Analytics Report - {self.constituency_var.get()}",
+                # Title with Part No if filtered
+                part_no = self.current_stats.get('part_no', 'All')
+                title_suffix = f" (Part {part_no})" if part_no != 'All' else ""
+                fig1.suptitle(f"Voter Analytics Report - {self.constituency_var.get()}{title_suffix}",
                              fontsize=16, fontweight='bold', y=0.98)
 
                 # Add date
@@ -623,6 +680,7 @@ class VoterAnalyticsDashboard:
                 stats_text = f"""
 Summary Statistics
 ══════════════════════════════════════
+Part Number:      {part_no}
 Total Voters:     {self.current_stats['total']:,}
 Male Voters:      {self.current_stats['male_count']:,} ({self.current_stats['male_pct']:.2f}%)
 Female Voters:    {self.current_stats['female_count']:,} ({self.current_stats['female_pct']:.2f}%)
