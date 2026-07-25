@@ -5,10 +5,10 @@
 #
 # Usage:
 #   # Default port 8501:
-#   curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/thiraviyalingesh/voters_project_2.0/main/cloud/setup.sh | tr -d '\r' | bash
 #
 #   # Custom port (e.g., 8080):
-#   curl -sSL https://raw.githubusercontent.com/vinayaklearnsML2022/voters_project/main/cloud/setup.sh | bash -s -- --port 8080
+#   curl -sSL https://raw.githubusercontent.com/thiraviyalingesh/voters_project_2.0/main/cloud/setup.sh | tr -d '\r' | bash -s -- --port 8080
 #
 
 set -e  # Exit on error
@@ -16,6 +16,12 @@ set -e  # Exit on error
 # ============== CONFIGURATION ==============
 # Change this to use a different port
 STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
+
+# Install location. Must match BASE_DIR in cloud/voter_processor_ui.py
+APP_DIR="$HOME/voter_analytics_2.0"
+
+# systemd unit name (used as $SERVICE_NAME.service)
+SERVICE_NAME="voter-analytics-2"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -101,20 +107,21 @@ DEFAULT_REPO="https://github.com/thiraviyalingesh/voters_project_2.0.git"
 REPO_URL="${CUSTOM_REPO:-$DEFAULT_REPO}"
 
 echo "Cloning from: $REPO_URL"
-if [ -d ~/voter_analytics_2.0 ]; then
+echo "Install directory: $APP_DIR"
+if [ -d "$APP_DIR" ]; then
     print_warning "Directory exists. Pulling latest..."
-    cd ~/voter_analytics_2.0 && git pull origin main || true
+    cd "$APP_DIR" && git pull origin main || true
 else
-    git clone "$REPO_URL" ~/voter_analytics_2.0
+    git clone "$REPO_URL" "$APP_DIR"
 fi
 
 # Create required directories
-mkdir -p ~/voter_analytics_2.0/uploads
-mkdir -p ~/voter_analytics_2.0/uploads/output
-mkdir -p ~/voter_analytics_2.0/processing
-mkdir -p ~/voter_analytics_2.0/output
-mkdir -p ~/voter_analytics_2.0/logs
-cd ~/voter_analytics_2.0
+mkdir -p "$APP_DIR/uploads"
+mkdir -p "$APP_DIR/uploads/output"
+mkdir -p "$APP_DIR/processing"
+mkdir -p "$APP_DIR/output"
+mkdir -p "$APP_DIR/logs"
+cd "$APP_DIR"
 print_status "Project directories created"
 
 # Step 4: Create virtual environment
@@ -135,7 +142,9 @@ pip install -q \
     openpyxl \
     streamlit \
     requests \
-    watchdog
+    watchdog \
+    pandas \
+    matplotlib
 
 print_status "Python packages installed"
 
@@ -145,9 +154,18 @@ echo "Step 6/7: Setting up auto-start service..."
 
 # Get current user
 CURRENT_USER=$(whoami)
-HOME_DIR=$(eval echo ~$CURRENT_USER)
 
-sudo tee /etc/systemd/system/voter-analytics-2-2.service > /dev/null << EOF
+# Remove the old, misnamed unit from previous versions of this script
+if [ -f /etc/systemd/system/voter-analytics-2-2.service ]; then
+    sudo systemctl disable --now voter-analytics-2-2.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/voter-analytics-2-2.service
+    print_warning "Removed stale voter-analytics-2-2.service"
+fi
+
+# WorkingDirectory is cloud/ so Streamlit picks up cloud/.streamlit/config.toml
+# (maxUploadSize = 5000 MB). PATH must include the system dirs so pytesseract
+# can find the tesseract binary.
+sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null << EOF
 [Unit]
 Description=Voter Analytics Web UI
 After=network.target
@@ -155,9 +173,9 @@ After=network.target
 [Service]
 Type=simple
 User=$CURRENT_USER
-WorkingDirectory=$HOME_DIR/voter_analytics
-Environment="PATH=$HOME_DIR/voter_analytics/venv/bin"
-ExecStart=$HOME_DIR/voter_analytics/venv/bin/streamlit run cloud/voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0
+WorkingDirectory=$APP_DIR/cloud
+Environment="PATH=$APP_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=$APP_DIR/venv/bin/streamlit run voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0
 Restart=always
 RestartSec=10
 
@@ -166,7 +184,7 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-print_status "Auto-start service configured"
+print_status "Auto-start service configured ($SERVICE_NAME.service)"
 
 # Step 7: Configure firewall (if ufw is available)
 echo ""
@@ -184,16 +202,16 @@ echo "=============================================="
 echo -e "${GREEN}  Setup Complete!${NC}"
 echo "=============================================="
 echo ""
-echo "Quick Start (if files already exist):"
+echo "Quick Start (run from cloud/ so .streamlit/config.toml applies):"
 echo ""
-echo "  cd ~/voter_analytics_2.0"
-echo "  source venv/bin/activate"
-echo "  streamlit run cloud/voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0"
+echo "  cd $APP_DIR/cloud"
+echo "  source ../venv/bin/activate"
+echo "  streamlit run voter_processor_ui.py --server.port $STREAMLIT_PORT --server.address 0.0.0.0"
 echo ""
-echo "OR use systemd service:"
+echo "OR use systemd service (recommended, auto-restarts):"
 echo ""
-echo "  sudo systemctl start voter-analytics-2"
-echo "  sudo systemctl enable voter-analytics-2"
+echo "  sudo systemctl enable --now $SERVICE_NAME"
+echo "  sudo systemctl status $SERVICE_NAME"
 echo ""
 echo "Access Web UI at: http://YOUR_VM_IP:$STREAMLIT_PORT"
 echo ""
@@ -204,7 +222,7 @@ echo "    --allow tcp:$STREAMLIT_PORT --direction INGRESS"
 echo ""
 echo "----------------------------------------------"
 echo "To update code later:"
-echo "  cd ~/voter_analytics_2.0 && git pull origin main"
+echo "  cd $APP_DIR && git pull origin main && sudo systemctl restart $SERVICE_NAME"
 echo ""
 echo "=============================================="
 echo ""
